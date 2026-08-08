@@ -121,7 +121,10 @@
   }
   .flt:hover { background: none; color: var(--accent); border-bottom-color: var(--accent); }
   .flt.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
-  .actions { display: flex; gap: 6px; align-items: center; position: relative; }
+  /* Stacked, so merge sits under the worktree button rather than beside it. */
+  .actions {
+    display: flex; flex-direction: column; gap: 6px; align-items: stretch; position: relative;
+  }
   /* Editing affordances stay out of the way until you hover the row they
      belong to, so a card at rest reads as information rather than controls. */
   .anchor { position: relative; display: inline-block; }

@@ -95,6 +95,17 @@ class TestClassify:
         bucket, _ = classify(make_pr(author=ME), ME)
         assert bucket == "waiting"
 
+    def test_mine_merge_ready_beats_new_comments(self):
+        # Approved and green is something you can land now, so it belongs in
+        # merge-ready rather than the pile of PRs needing work; the badge
+        # still reports the new comment.
+        pr = make_pr(
+            author=ME, decision="APPROVED", ci="SUCCESS", comments=[(ME, t(1)), ("alice", t(2))]
+        )
+        bucket, badges = classify(pr, ME)
+        assert bucket == "merge_ready"
+        assert "1 new comment" in badge_texts(badges)
+
     def test_pushed_since_review_badge_suppressed_on_own_pr(self):
         # Inline comments on your own PR create COMMENTED pseudo-reviews;
         # a later push must not claim "pushed since your review".
@@ -150,6 +161,22 @@ class TestClassify:
         assert bucket != "merge_ready"
         assert "CI failing" in badge_texts(badges)
 
+    def test_conflicts_are_not_merge_ready(self):
+        # Approved and green, but nobody can land it until it is rebased, so it
+        # is work for its author rather than a merge candidate.
+        pr = make_pr(author=ME, decision="APPROVED", ci="SUCCESS") | {"mergeable": "CONFLICTING"}
+        bucket, badges = classify(pr, ME)
+        assert bucket == "yours_act"
+        assert "conflicts" in badge_texts(badges)
+
+    def test_someone_elses_conflicted_pr_waits_on_them(self):
+        pr = make_pr(decision="APPROVED", ci="SUCCESS", reviews=[(ME, "APPROVED", t(2))]) | {
+            "mergeable": "CONFLICTING"
+        }
+        bucket, badges = classify(pr, ME)
+        assert bucket == "waiting"
+        assert "conflicts" in badge_texts(badges)
+
     def test_deleted_author_is_not_mine(self):
         bucket, _ = classify(make_pr(author=None), ME)
         assert bucket == "review"
@@ -203,6 +230,72 @@ class TestDoEdit:
         ]
 
 
+class TestMergeabilityRetry:
+    """GitHub answers UNKNOWN the first time and computes in the background."""
+
+    def cold_then_warm(self, monkeypatch, decision, draft=False):
+        pr = make_pr(author="alice", decision=decision, draft=draft)
+        replies = [
+            {"search": {"nodes": [pr | {"mergeable": "UNKNOWN"}]}},
+            {"search": {"nodes": [pr | {"mergeable": "MERGEABLE"}]}},
+        ]
+        monkeypatch.setattr(
+            pr_triage, "time", type("T", (), {"sleep": staticmethod(lambda s: None)})
+        )
+        return replies
+
+    def test_asks_again_when_an_approved_pr_is_unknown(self, monkeypatch):
+        replies = self.cold_then_warm(monkeypatch, "APPROVED")
+        assert pr_triage.waiting_on_mergeability(replies[0]) is True
+        assert pr_triage.waiting_on_mergeability(replies[1]) is False
+
+    def test_does_not_wait_on_prs_that_could_not_merge_anyway(self, monkeypatch):
+        # No point paying for a second round trip for something unapprovable.
+        for decision in ("CHANGES_REQUESTED", "REVIEW_REQUIRED", None):
+            replies = self.cold_then_warm(monkeypatch, decision)
+            assert pr_triage.waiting_on_mergeability(replies[0]) is False
+
+    def test_ignores_drafts(self, monkeypatch):
+        replies = self.cold_then_warm(monkeypatch, "APPROVED", draft=True)
+        assert pr_triage.waiting_on_mergeability(replies[0]) is False
+
+    def test_retries_once_and_uses_the_second_answer(self, monkeypatch):
+        calls = []
+
+        def fake_run(search):
+            calls.append(search)
+            state = "UNKNOWN" if len(calls) == 1 else "MERGEABLE"
+            pr = make_pr(author="alice", decision="APPROVED") | {
+                "number": 1,
+                "title": "t",
+                "url": "u",
+                "body": "",
+                "createdAt": t(0),
+                "updatedAt": t(1),
+                "headRefName": "b",
+                "additions": 0,
+                "deletions": 0,
+                "labels": {"nodes": []},
+                "assignees": {"nodes": []},
+                "mergeable": state,
+                "mergeStateStatus": "CLEAN" if state == "MERGEABLE" else "UNKNOWN",
+            }
+            return {
+                "viewer": {"login": ME, "avatarUrl": ""},
+                "search": {"issueCount": 1, "nodes": [pr]},
+            }
+
+        monkeypatch.setattr(pr_triage, "run_search", fake_run)
+        monkeypatch.setattr(pr_triage, "list_worktrees", list)
+        monkeypatch.setattr(pr_triage, "merge_method", lambda: "SQUASH")
+        monkeypatch.setattr(pr_triage.time, "sleep", lambda s: None)
+
+        result = pr_triage.fetch_prs("is:open")
+
+        assert len(calls) == 2  # exactly one retry, not a loop
+        assert result["prs"][0]["canMerge"] is True
+
+
 class TestFetchPrs:
     def test_parses_graphql_response(self, monkeypatch):
         pr = make_pr(decision="REVIEW_REQUIRED") | {
@@ -244,8 +337,8 @@ class TestFetchPrs:
         assert got["worktree"] is None
 
     def test_merge_readiness_travels_with_each_pr(self, monkeypatch):
-        def payload(mergeable, state):
-            pr = make_pr() | {
+        def payload(mergeable, state, decision="APPROVED"):
+            pr = make_pr(decision=decision) | {
                 "number": 1,
                 "title": "t",
                 "url": "u",
@@ -267,9 +360,11 @@ class TestFetchPrs:
                 }
             }
 
-        def run(mergeable, state):
+        def run(mergeable, state, decision="APPROVED"):
             monkeypatch.setattr(
-                pr_triage, "sh", lambda args, **k: (0, json.dumps(payload(mergeable, state)), "")
+                pr_triage,
+                "sh",
+                lambda args, **k: (0, json.dumps(payload(mergeable, state, decision)), ""),
             )
             monkeypatch.setattr(pr_triage, "merge_method", lambda: "SQUASH")
             return pr_triage.fetch_prs("is:open")["prs"][0]["canMerge"]
@@ -279,3 +374,12 @@ class TestFetchPrs:
         assert run("MERGEABLE", "BLOCKED") is False  # a required check or review is missing
         assert run("CONFLICTING", "DIRTY") is False
         assert run("UNKNOWN", "UNKNOWN") is False  # GitHub has not worked it out yet
+
+        # Approval is required on its own. mergeStateStatus reports a single
+        # reason, so a PR that is both behind its base and blocked by a
+        # changes-requested review comes back BEHIND — offering merge would
+        # send the user to a button GitHub refuses.
+        assert run("MERGEABLE", "BEHIND", "CHANGES_REQUESTED") is False
+        assert run("MERGEABLE", "CLEAN", "CHANGES_REQUESTED") is False
+        assert run("MERGEABLE", "CLEAN", "REVIEW_REQUIRED") is False
+        assert run("MERGEABLE", "CLEAN", None) is False

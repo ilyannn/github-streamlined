@@ -28,6 +28,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -234,6 +235,9 @@ def classify(pr, me):
         badges.append({"text": "CI failing", "kind": "danger"})
     elif ci == "PENDING":
         badges.append({"text": "CI running", "kind": "muted"})
+    if pr.get("mergeable") == "CONFLICTING":
+        # Otherwise an approved, green PR with no merge button looks broken.
+        badges.append({"text": "conflicts", "kind": "danger"})
     if decision == "CHANGES_REQUESTED":
         badges.append({"text": "changes requested", "kind": "danger"})
     elif decision == "APPROVED":
@@ -249,14 +253,26 @@ def classify(pr, me):
         badges.append({"text": "not seen by you", "kind": "info"})
 
     ci_ok = ci in ("SUCCESS", "EXPECTED", None)
+    conflicting = pr.get("mergeable") == "CONFLICTING"
+    # Conflicts disqualify a PR however green and approved it is: nobody can
+    # merge it until the branch is rebased, so it is work, not a candidate.
+    landable = decision == "APPROVED" and ci_ok and not conflicting
 
     if draft:
         bucket = "drafts"
     elif mine:
-        if decision == "CHANGES_REQUESTED" or ci in ("FAILURE", "ERROR") or others_new:
-            bucket = "yours_act"
-        elif decision == "APPROVED" and ci_ok:
+        # Merge-ready wins over "act": a PR of yours that is approved and green
+        # belongs with the ones you can land, even if a comment arrived since.
+        # The badge still says so.
+        if landable:
             bucket = "merge_ready"
+        elif (
+            decision == "CHANGES_REQUESTED"
+            or ci in ("FAILURE", "ERROR")
+            or conflicting
+            or others_new
+        ):
+            bucket = "yours_act"
         else:
             bucket = "waiting"
     else:
@@ -266,22 +282,46 @@ def classify(pr, me):
             or others_new
             or (not my_last and decision in (None, "REVIEW_REQUIRED"))
         )
-        if decision == "APPROVED" and ci_ok:
+        if landable:
             bucket = "merge_ready"
         elif needs_me:
             bucket = "review"
         else:
+            # Someone else's conflicted PR waits on its author to rebase.
             bucket = "waiting"
 
     return bucket, badges
 
 
-def fetch_prs(user_query):
-    search = f"repo:{REPO} is:pr {user_query}"
+def run_search(search):
     rc, out, err = sh(["gh", "api", "graphql", "-f", f"query={GRAPHQL_QUERY}", "-f", f"q={search}"])
     if rc != 0:
         raise RuntimeError(err.strip() or out.strip())
-    data = json.loads(out)["data"]
+    return json.loads(out)["data"]
+
+
+def waiting_on_mergeability(data):
+    """True while GitHub still owes us a mergeable verdict for a candidate.
+
+    GitHub computes mergeability lazily: the first request for it comes back
+    UNKNOWN and kicks off the work. Without a second look, the merge button
+    would only ever appear on the refresh after the one you asked for.
+    """
+    return any(
+        pr
+        and pr.get("mergeable") == "UNKNOWN"
+        and pr.get("reviewDecision") == "APPROVED"
+        and not pr["isDraft"]
+        for pr in data["search"]["nodes"]
+    )
+
+
+def fetch_prs(user_query):
+    search = f"repo:{REPO} is:pr {user_query}"
+    data = run_search(search)
+    if waiting_on_mergeability(data):
+        time.sleep(1.5)
+        data = run_search(search)
     me = data["viewer"]["login"]
     # One listing for the whole page, so each row can say whether its worktree
     # is already there ("Open") or still has to be made ("Add").
@@ -315,6 +355,10 @@ def fetch_prs(user_query):
                 "canMerge": (
                     pr.get("mergeable") == "MERGEABLE"
                     and pr.get("mergeStateStatus") in MERGEABLE_STATES
+                    # mergeStateStatus alone is not enough: it reports a single
+                    # reason, so a PR that is both out of date and blocked by a
+                    # changes-requested review comes back BEHIND, not BLOCKED.
+                    and pr.get("reviewDecision") == "APPROVED"
                     and not pr["isDraft"]
                 ),
                 "mergeState": pr.get("mergeStateStatus"),
