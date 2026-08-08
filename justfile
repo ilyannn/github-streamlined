@@ -30,6 +30,7 @@ prerequisites:
         case "$tool" in
             "" | \#*) continue ;;
             python) command="python3" ;;
+            nodejs) command="node" ;;
             *) command="$tool" ;;
         esac
         command -v "$command" > /dev/null 2>&1 || missing="$missing $command"
@@ -60,11 +61,18 @@ fmt:
     ruff format .
     taplo fmt
 
-# Run the test suite
-tests:
-    uv run --no-project --with pytest=={{ pytest_version }} -- pytest
+# Run every test there is
+tests: test-py test-js
 
 alias test := tests
+
+# Test the server and the triage logic
+test-py:
+    uv run --no-project --with pytest=={{ pytest_version }} -- pytest
+
+# Test the browser-side query helpers (Node's built-in runner, no dependencies)
+test-js:
+    node --test pr-triage/tests/*.test.mjs
 
 # Run everything CI enforces
 check: prerequisites lint tests

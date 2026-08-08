@@ -33,6 +33,13 @@ HERE = Path(__file__).resolve().parent
 PORT = int(os.getenv("PR_TRIAGE_PORT", "8642"))
 DEFAULT_QUERY = os.getenv("PR_TRIAGE_QUERY", "is:open")
 
+# The only files served off disk, so a path can never escape this directory.
+STATIC = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/query.mjs": ("query.mjs", "text/javascript; charset=utf-8"),
+}
+
 LOGIN_RE = re.compile(r"^[A-Za-z0-9-]{1,39}$")
 # Label names may contain letters, digits, spaces and common punctuation,
 # but never commas (comma is gh's list separator).
@@ -305,16 +312,19 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         return json.loads(self.rfile.read(length) or b"{}")
 
+    def send_static(self, name, content_type):
+        body = (HERE / name).read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         url = urlparse(self.path)
         try:
-            if url.path in ("/", "/index.html"):
-                html = (HERE / "index.html").read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(html)))
-                self.end_headers()
-                self.wfile.write(html)
+            if url.path in STATIC:
+                self.send_static(*STATIC[url.path])
             elif url.path == "/api/prs":
                 q = parse_qs(url.query).get("q", [DEFAULT_QUERY])[0]
                 self.send_json(200, fetch_prs(q))

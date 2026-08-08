@@ -19,6 +19,25 @@ checkout, refusing if it has uncommitted tracked changes), **🏷 Labels**
 (toggle any repo label), **👤 Assign** (one-click assign-me, or add/remove
 any login).
 
+## Filtering by clicking
+
+Most things on a card are a filter toggle: click a **label**, an **author**
+(name or avatar), an **assignee**, or an **approved** / **changes requested** /
+**your review requested** badge to add that term to the query, and click it
+again to remove it. Applied filters are outlined, so you can always see what
+is narrowing the list. **CI** badges link to the PR's checks instead — GitHub
+search has no qualifier for them.
+
+Section headers collapse and expand (remembered across reloads), the repo name
+opens the PR list on github.com, and ✕ resets the query.
+
+| Key | |
+| --- | --- |
+| <kbd>/</kbd> | Focus the search box |
+| <kbd>r</kbd> | Refresh now |
+| <kbd>Enter</kbd> | Apply the query (it persists across reloads) |
+| <kbd>Esc</kbd> | Close a popover, or leave the search box |
+
 ## Requirements
 
 Python 3.11+ and an authenticated `gh` CLI. No other dependencies.
@@ -62,3 +81,6 @@ From the repository root:
 ```bash
 just tests
 ```
+
+`just test-py` covers the server and the triage logic; `just test-js` covers
+[`query.mjs`](query.mjs), the query-string helpers behind the filter buttons.

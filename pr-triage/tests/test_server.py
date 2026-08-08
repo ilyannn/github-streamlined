@@ -45,6 +45,18 @@ def test_index_serves_html(base_url):
     assert "PR Triage" in body
 
 
+def test_serves_the_query_module(base_url):
+    # index.html imports this; a 404 here would break every filter button.
+    status, body = req(base_url + "/query.mjs")
+    assert status == 200
+    assert "export function toggleTerm" in body
+
+
+def test_static_map_does_not_serve_arbitrary_files(base_url):
+    for path in ("/pr_triage.py", "/../pyproject.toml", "/tests/test_server.py"):
+        assert req(base_url + path)[0] == 404
+
+
 def test_prs_uses_default_query(base_url, monkeypatch):
     monkeypatch.setattr(pr_triage, "fetch_prs", lambda q: {"query": q, "prs": []})
     status, body = req(base_url + "/api/prs")
