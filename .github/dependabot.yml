@@ -1,0 +1,11 @@
+version: 2
+
+# SHA-pinned actions never update on their own, so let Dependabot propose the
+# bumps; it rewrites both the SHA and the version comment in ci.yml.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci

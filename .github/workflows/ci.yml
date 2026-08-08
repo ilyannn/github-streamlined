@@ -12,6 +12,17 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
+      # Actions are pinned to a commit SHA rather than a tag: a tag can be
+      # repointed at new code by whoever owns the action, a SHA cannot. The
+      # trailing comment is the human-readable version, and is what Dependabot
+      # (.github/dependabot.yml) rewrites when it proposes a bump.
+      #
+      # Both pins run on node24. Node 20 stopped being the runner default on
+      # 2026-06-16 and is removed from runners in autumn 2026:
+      # https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes, so don't leave the token in .git/config.
+          persist-credentials: false
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
       - run: just check
