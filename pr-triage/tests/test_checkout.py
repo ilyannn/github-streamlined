@@ -177,6 +177,27 @@ class TestDoCheckout:
         assert "opened" not in do_checkout(99)
 
 
+class TestOpenWorktree:
+    def test_opens_a_worktree_git_reports(self, repo, monkeypatch):
+        shell_for(monkeypatch, "unused", PORCELAIN.replace("/repo", str(repo)))
+        spawned = []
+        monkeypatch.setattr(pr_triage, "spawn", spawned.append)
+        monkeypatch.setattr(pr_triage.shutil, "which", lambda name: f"/bin/{name}")
+
+        result = pr_triage.open_worktree(str(repo / ".worktrees/pr-42"), "code")
+
+        assert result["branch"] == "feature/frob"
+        assert spawned == [["/bin/code", str(repo / ".worktrees/pr-42")]]
+
+    def test_refuses_a_path_that_is_not_a_worktree(self, repo, monkeypatch):
+        shell_for(monkeypatch, "unused", PORCELAIN.replace("/repo", str(repo)))
+        monkeypatch.setattr(pr_triage, "spawn", lambda argv: pytest.fail("spawned"))
+        # Otherwise a request could name any directory on the machine and have
+        # the open command run against it.
+        with pytest.raises(RuntimeError, match="Not a worktree of this repo"):
+            pr_triage.open_worktree("/etc", "code")
+
+
 class TestOpenPath:
     def test_appends_the_path_as_its_own_argument(self, monkeypatch):
         spawned = []

@@ -388,6 +388,19 @@ def do_checkout(number, open_command=None):
     return result
 
 
+def open_worktree(path, command):
+    """Open one of this repo's worktrees.
+
+    The path has to be one git reports rather than free text, so the request
+    cannot name an arbitrary directory to hand to the open command.
+    """
+    known = [(p, b) for p, b in list_worktrees() if p == path]
+    if not known:
+        raise RuntimeError(f"Not a worktree of this repo: {path}")
+    open_path(command, path)
+    return {"path": path, "branch": known[0][1], "opened": command}
+
+
 def do_edit(number, add_flag, remove_flag, add, remove, validator, what):
     for name in add + remove:
         if not validator.match(name):
@@ -446,6 +459,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, fetch_prs(q))
             elif url.path == "/api/labels":
                 self.send_json(200, list_labels())
+            elif url.path == "/api/worktrees":
+                self.send_json(
+                    200,
+                    {
+                        "mainCheckout": MAIN_CHECKOUT,
+                        "worktrees": [{"path": p, "branch": b} for p, b in list_worktrees()],
+                    },
+                )
             else:
                 self.send_json(404, {"error": "not found"})
         except Exception as e:  # surface any gh/parse failure to the UI banner
@@ -470,6 +491,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.guard()
             body = self.read_body()
+            if url.path == "/api/open":
+                self.send_json(200, open_worktree(body["path"], body.get("open")))
+                return
             number = int(body["number"])
             if url.path == "/api/checkout":
                 self.send_json(200, do_checkout(number, body.get("open")))

@@ -26,7 +26,11 @@ branch is checked out anywhere, or if that directory is a worktree already.
 Either way the folder is then opened with a command of your choice, asked for
 the first time you use the button and saved in the browser (`code`, `cursor`,
 `zed`, `open`, …). It runs as `<command> <folder>` with no shell involved.
-Change it any time from the header.
+
+**🌳 Worktrees** in the header (or <kbd>w</kbd>) opens every worktree of the
+repo — not only the ones for PRs — searchable by branch or folder, with
+↑/↓ and <kbd>Enter</kbd> to open one. The open command lives at the top of
+that panel, so it is editable wherever you are.
 
 ## Filtering by clicking
 

@@ -49,7 +49,7 @@ def test_serves_the_query_module(base_url):
     # index.html imports this; a 404 here would break every filter button.
     status, body = req(base_url + "/query.mjs")
     assert status == 200
-    assert "export function toggleTerm" in body
+    assert "export function toggleTerms" in body
 
 
 def test_static_map_does_not_serve_arbitrary_files(base_url):
@@ -107,6 +107,36 @@ def test_checkout_routes_to_do_checkout(base_url, monkeypatch):
     )
     assert status == 200
     assert body == {"path": "/repo", "branch": "pr-5", "opened": "code"}
+
+
+def test_worktrees_endpoint_lists_them(base_url, monkeypatch):
+    monkeypatch.setattr(pr_triage, "list_worktrees", lambda: [("/repo", "main"), ("/wt", None)])
+    monkeypatch.setattr(pr_triage, "MAIN_CHECKOUT", "/repo")
+    status, body = req(base_url + "/api/worktrees")
+    assert status == 200
+    assert body == {
+        "mainCheckout": "/repo",
+        "worktrees": [{"path": "/repo", "branch": "main"}, {"path": "/wt", "branch": None}],
+    }
+
+
+def test_open_routes_to_open_worktree(base_url, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        pr_triage,
+        "open_worktree",
+        lambda path, command: (calls.append((path, command)), {"path": path})[1],
+    )
+    status, body = req(base_url + "/api/open", method="POST", body={"path": "/wt", "open": "code"})
+    assert status == 200
+    assert body == {"path": "/wt"}
+    assert calls == [("/wt", "code")]
+
+
+def test_open_without_a_path_is_400(base_url):
+    # The endpoint takes a path rather than a PR number, so it must not fall
+    # through to the number-based branches.
+    assert req(base_url + "/api/open", method="POST", body={})[0] == 400
 
 
 class TestGuard:

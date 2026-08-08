@@ -174,8 +174,25 @@
     font: 12px ui-monospace, monospace; background: var(--hover);
     padding: 1px 4px; border-radius: 4px;
   }
-  #opener { font-family: ui-monospace, monospace; max-width: 180px; overflow: hidden;
-    text-overflow: ellipsis; }
+  /* Anchored from the right: this one hangs off a button near the right edge
+     of the header, where a left-anchored panel would run off screen. */
+  .popover.panel { width: 420px; top: 32px; left: auto; right: 0; }
+  .panel .list { max-height: 320px; }
+  .panel .cmd { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .panel .cmd span { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .panel .cmd input { margin: 0; font-family: ui-monospace, monospace; }
+  .panel .wt {
+    display: block; width: 100%; text-align: left; border: none; background: none;
+    padding: 5px 8px; border-radius: 6px; line-height: 1.3;
+  }
+  .panel .wt:hover, .panel .wt.sel { background: var(--hover); }
+  .panel .wt .branch { display: block; font-size: 12px; font-weight: 600; }
+  .panel .wt .path {
+    display: block; font: 11px ui-monospace, monospace; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .panel .wt.detached .branch { color: var(--muted); font-weight: 400; font-style: italic; }
+  .panel .none { color: var(--muted); font-size: 12px; padding: 8px; text-align: center; }
   kbd {
     font: 11px ui-monospace, monospace; border: 1px solid var(--border);
     border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--muted);
@@ -190,7 +207,8 @@
     <input id="query" spellcheck="false" placeholder="GitHub search syntax — press / to focus, Enter to apply">
     <button id="clear" title="Reset to the default query">✕</button>
   </div>
-  <button id="opener" title="Change the command that opens a worktree"></button>
+  <span class="anchor"><button id="worktrees"
+    title="Find a worktree and open it">🌳 Worktrees</button></span>
   <button class="primary" id="refresh" title="Refresh (r)">Refresh</button>
   <span id="status"></span>
   <span id="viewer"></span>
@@ -267,10 +285,13 @@ function closePopover() {
   for (const btn of document.querySelectorAll(".icon-btn.open")) btn.classList.remove("open");
 }
 
-/** Nudge a popover back on screen when its anchor sits near the right edge. */
+/** Nudge a popover back on screen, without pushing it off the other edge. */
 function placePopover(pop) {
-  const overflow = pop.getBoundingClientRect().right - (window.innerWidth - 12);
-  if (overflow > 0) pop.style.transform = `translateX(${-overflow}px)`;
+  if (!window.innerWidth) return;  // nothing to clamp against before first layout
+  const box = pop.getBoundingClientRect();
+  let shift = Math.min(0, window.innerWidth - 12 - box.right);
+  if (box.left + shift < 12) shift = 12 - box.left;
+  if (shift) pop.style.transform = `translateX(${shift}px)`;
 }
 document.addEventListener("click", e => {
   if (state.openPopover && !state.openPopover.contains(e.target)) closePopover();
@@ -500,17 +521,89 @@ function post(body) {
 const OPEN_KEY = "pr-triage-open-command";
 const SUGGESTIONS = ["code", "cursor", "zed", "subl", "idea", "open"];
 
-function renderOpener() {
-  const command = localStorage.getItem(OPEN_KEY);
-  $("#opener").textContent = command ? `📂 ${command}` : "📂 set opener";
-}
-
 async function ensureOpenCommand() {
   const saved = localStorage.getItem(OPEN_KEY);
   if (saved) return saved;
   const chosen = await askOpenCommand("");
-  if (chosen) { localStorage.setItem(OPEN_KEY, chosen); renderOpener(); }
+  if (chosen) localStorage.setItem(OPEN_KEY, chosen);
   return chosen;
+}
+
+// ------------------------------ worktree picker -----------------------------
+
+/** Shorten a worktree path against the main checkout it belongs to. */
+function shortPath(path, main) {
+  if (main && path === main) return `${main.split("/").pop()} (main checkout)`;
+  if (main && path.startsWith(main + "/")) return "…/" + path.slice(main.length + 1);
+  return path.replace(/^\/Users\/[^/]+/, "~");
+}
+
+async function worktreePanel(anchor) {
+  closePopover();
+  const pop = document.createElement("div");
+  pop.className = "popover panel";
+  pop.addEventListener("click", e => e.stopPropagation());
+  pop.innerHTML = `
+    <div class="cmd"><span>Open in</span>
+      <input type="text" data-cmd spellcheck="false" placeholder="code"
+        value="${esc(localStorage.getItem(OPEN_KEY) || "")}"></div>
+    <input type="text" data-search spellcheck="false" placeholder="Search branch or folder…">
+    <div class="list">Loading…</div>`;
+  anchor.appendChild(pop);
+  placePopover(pop);
+  state.openPopover = pop;
+
+  const cmd = $("[data-cmd]", pop);
+  const search = $("[data-search]", pop);
+  const list = $(".list", pop);
+  cmd.oninput = () => localStorage.setItem(OPEN_KEY, cmd.value.trim());
+  search.focus({ preventScroll: true });  // focusing must not scroll the list away
+
+  const data = await api("/api/worktrees");
+  let shown = [], sel = 0;
+
+  const draw = () => {
+    const needle = search.value.trim().toLowerCase();
+    shown = data.worktrees.filter(w =>
+      (w.branch || "detached").toLowerCase().includes(needle) ||
+      w.path.toLowerCase().includes(needle));
+    sel = Math.min(sel, Math.max(shown.length - 1, 0));
+    list.innerHTML = shown.length
+      ? shown.map((w, i) => `<button class="wt${w.branch ? "" : " detached"}${
+          i === sel ? " sel" : ""}" data-path="${esc(w.path)}">
+          <span class="branch">${esc(w.branch || "detached")}</span>
+          <span class="path">${esc(shortPath(w.path, data.mainCheckout))}</span>
+        </button>`).join("")
+      : `<div class="none">No worktree matches</div>`;
+    for (const row of list.querySelectorAll(".wt")) {
+      row.onclick = () => openWorktree(row.dataset.path, cmd.value.trim());
+    }
+  };
+  draw();
+
+  search.oninput = () => { sel = 0; draw(); };
+  search.onkeydown = e => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      sel = Math.max(0, Math.min(shown.length - 1, sel + (e.key === "ArrowDown" ? 1 : -1)));
+      draw();
+      list.querySelector(".wt.sel")?.scrollIntoView({ block: "nearest" });
+    }
+    if (e.key === "Enter" && shown[sel]) openWorktree(shown[sel].path, cmd.value.trim());
+  };
+}
+
+async function openWorktree(path, command) {
+  const opener = command || await ensureOpenCommand();
+  if (!opener) return;
+  localStorage.setItem(OPEN_KEY, opener);
+  closePopover();
+  try {
+    const res = await api("/api/open", post({ path, open: opener }));
+    toast(`${res.branch || "detached"}\n${res.path}\n→ ${res.opened}`);
+  } catch (e) {
+    toast(`Open failed:\n${e.message}`, true);
+  }
 }
 
 /** Resolves to the command string, or null if cancelled. */
@@ -640,11 +733,10 @@ function assignPopover(pr, anchor) {
 
 $("#refresh").onclick = load;
 $("#clear").onclick = () => setQuery("");
-$("#opener").onclick = async () => {
-  const chosen = await askOpenCommand(localStorage.getItem(OPEN_KEY) || "");
-  if (chosen) { localStorage.setItem(OPEN_KEY, chosen); renderOpener(); }
+$("#worktrees").onclick = e => {
+  e.stopPropagation();
+  worktreePanel($("#worktrees").closest(".anchor"));
 };
-renderOpener();
 qInput.addEventListener("keydown", e => {
   if (e.key === "Enter") setQuery(qInput.value);
   if (e.key === "Escape") qInput.blur();
@@ -656,6 +748,7 @@ document.addEventListener("keydown", e => {
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === "/") { e.preventDefault(); qInput.focus(); qInput.select(); }
   if (e.key === "r") { e.preventDefault(); load(); }
+  if (e.key === "w") { e.preventDefault(); $("#worktrees").click(); }
 });
 
 setInterval(() => { if (document.visibilityState === "visible") load(); }, 120000);
