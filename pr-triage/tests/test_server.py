@@ -52,6 +52,12 @@ def test_serves_the_query_module(base_url):
     assert "export function toggleTerms" in body
 
 
+def test_serves_the_paths_module(base_url):
+    status, body = req(base_url + "/paths.mjs")
+    assert status == 200
+    assert "export function shortPath" in body
+
+
 def test_static_map_does_not_serve_arbitrary_files(base_url):
     for path in ("/pr_triage.py", "/../pyproject.toml", "/tests/test_server.py"):
         assert req(base_url + path)[0] == 404

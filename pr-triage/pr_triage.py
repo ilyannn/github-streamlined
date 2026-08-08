@@ -41,6 +41,7 @@ STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/query.mjs": ("query.mjs", "text/javascript; charset=utf-8"),
+    "/paths.mjs": ("paths.mjs", "text/javascript; charset=utf-8"),
 }
 
 ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}

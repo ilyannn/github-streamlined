@@ -186,12 +186,20 @@
     padding: 5px 8px; border-radius: 6px; line-height: 1.3;
   }
   .panel .wt:hover, .panel .wt.sel { background: var(--hover); }
-  .panel .wt .branch { display: block; font-size: 12px; font-weight: 600; }
+  .panel .wt .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .panel .wt .branch { font-size: 12px; font-weight: 600; }
+  .panel .wt .num { font: 11px ui-monospace, monospace; color: var(--muted); }
+  .panel .wt .prtitle {
+    display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pr.highlight { outline: 2px solid var(--accent); outline-offset: 1px; }
   .panel .wt .path {
     display: block; font: 11px ui-monospace, monospace; color: var(--muted);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .panel .wt.detached .branch { color: var(--muted); font-weight: 400; font-style: italic; }
+  .panel .wt.detached .prtitle, .panel .wt .prtitle { color: var(--muted); }
   .panel .none { color: var(--muted); font-size: 12px; padding: 8px; text-align: center; }
   kbd {
     font: 11px ui-monospace, monospace; border: 1px solid var(--border);
@@ -220,6 +228,7 @@
 <div id="toasts"></div>
 
 <script type="module">
+import { prNumberFromPath, shortPath } from "./paths.mjs";
 import { hasTerms, term, toggleTerms } from "./query.mjs";
 
 const SECTIONS = [
@@ -283,6 +292,7 @@ function toast(msg, isErr) {
 function closePopover() {
   if (state.openPopover) { state.openPopover.remove(); state.openPopover = null; }
   for (const btn of document.querySelectorAll(".icon-btn.open")) btn.classList.remove("open");
+  for (const card of document.querySelectorAll(".pr.highlight")) card.classList.remove("highlight");
 }
 
 /** Nudge a popover back on screen, without pushing it off the other edge. */
@@ -388,6 +398,7 @@ function render() {
 function renderPR(pr) {
   const el = document.createElement("div");
   el.className = "pr";
+  el.dataset.pr = pr.number;
 
   const badges = pr.badges.map(b => {
     // CI badges point at the run rather than a filter — there is no search
@@ -531,13 +542,6 @@ async function ensureOpenCommand() {
 
 // ------------------------------ worktree picker -----------------------------
 
-/** Shorten a worktree path against the main checkout it belongs to. */
-function shortPath(path, main) {
-  if (main && path === main) return `${main.split("/").pop()} (main checkout)`;
-  if (main && path.startsWith(main + "/")) return "…/" + path.slice(main.length + 1);
-  return path.replace(/^\/Users\/[^/]+/, "~");
-}
-
 async function worktreePanel(anchor) {
   closePopover();
   const pop = document.createElement("div");
@@ -560,24 +564,46 @@ async function worktreePanel(anchor) {
   search.focus({ preventScroll: true });  // focusing must not scroll the list away
 
   const data = await api("/api/worktrees");
+  // The PR list already knows which worktree each PR sits in, so join on that
+  // rather than asking GitHub again. A worktree whose PR is outside the
+  // current query still shows its number, taken from the directory name.
+  const prByPath = new Map(state.prs.filter(p => p.worktree).map(p => [p.worktree, p]));
+  const numberOf = w => prByPath.get(w.path)?.number ?? prNumberFromPath(w.path);
+
   let shown = [], sel = 0;
 
   const draw = () => {
     const needle = search.value.trim().toLowerCase();
-    shown = data.worktrees.filter(w =>
-      (w.branch || "detached").toLowerCase().includes(needle) ||
-      w.path.toLowerCase().includes(needle));
+    shown = data.worktrees.filter(w => {
+      const pr = prByPath.get(w.path);
+      const number = numberOf(w);
+      return [w.branch || "detached", w.path, number ? `#${number}` : "", pr?.title ?? ""]
+        .join(" ").toLowerCase().includes(needle);
+    });
     sel = Math.min(sel, Math.max(shown.length - 1, 0));
     list.innerHTML = shown.length
-      ? shown.map((w, i) => `<button class="wt${w.branch ? "" : " detached"}${
-          i === sel ? " sel" : ""}" data-path="${esc(w.path)}">
-          <span class="branch">${esc(w.branch || "detached")}</span>
-          <span class="path">${esc(shortPath(w.path, data.mainCheckout))}</span>
-        </button>`).join("")
+      ? shown.map((w, i) => {
+          const pr = prByPath.get(w.path);
+          const number = numberOf(w);
+          return `<button class="wt${w.branch ? "" : " detached"}${i === sel ? " sel" : ""}"
+            data-path="${esc(w.path)}"${pr ? ` data-pr="${pr.number}"` : ""}>
+            <span class="top">
+              <span class="branch">${esc(w.branch || "detached")}</span>
+              ${number ? `<span class="num">#${number}</span>` : ""}
+            </span>
+            ${pr ? `<span class="prtitle">${esc(pr.title)}</span>` : ""}
+            <span class="path">${esc(shortPath(w.path, data.mainCheckout))}</span>
+          </button>`;
+        }).join("")
       : `<div class="none">No worktree matches</div>`;
     for (const row of list.querySelectorAll(".wt")) {
       row.onclick = () => openWorktree(row.dataset.path, cmd.value.trim());
+      // Point at the card this worktree belongs to while the mouse is on it,
+      // then fall back to whatever the keyboard has selected.
+      row.onmouseenter = () => highlightPR(row.dataset.pr);
+      row.onmouseleave = () => highlightPR(list.querySelector(".wt.sel")?.dataset.pr);
     }
+    highlightPR(shown[sel] && prByPath.get(shown[sel].path)?.number);
   };
   draw();
 
@@ -591,6 +617,16 @@ async function worktreePanel(anchor) {
     }
     if (e.key === "Enter" && shown[sel]) openWorktree(shown[sel].path, cmd.value.trim());
   };
+}
+
+/** Ring the card for a PR, and bring it into view if it is just off screen. */
+function highlightPR(number) {
+  for (const card of document.querySelectorAll(".pr.highlight")) card.classList.remove("highlight");
+  if (!number) return;
+  const card = document.querySelector(`.pr[data-pr="${number}"]`);
+  if (!card) return;
+  card.classList.add("highlight");
+  card.scrollIntoView({ block: "nearest" });
 }
 
 async function openWorktree(path, command) {

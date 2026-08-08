@@ -28,9 +28,13 @@ the first time you use the button and saved in the browser (`code`, `cursor`,
 `zed`, `open`, …). It runs as `<command> <folder>` with no shell involved.
 
 **🌳 Worktrees** in the header (or <kbd>w</kbd>) opens every worktree of the
-repo — not only the ones for PRs — searchable by branch or folder, with
-↑/↓ and <kbd>Enter</kbd> to open one. The open command lives at the top of
-that panel, so it is editable wherever you are.
+repo — not only the ones for PRs — searchable by branch, folder, PR number or
+PR title, with ↑/↓ and <kbd>Enter</kbd> to open one. Rows show the PR number
+and title where the worktree belongs to one of the PRs on screen, and outline
+that PR's card as you move through the list. A worktree whose PR is outside
+the current query still shows its number, read from the directory name. The
+open command lives at the top of that panel, so it is editable wherever you
+are.
 
 ## Filtering by clicking
 
