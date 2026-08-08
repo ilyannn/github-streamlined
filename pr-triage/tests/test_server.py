@@ -19,12 +19,12 @@ def base_url():
     srv.shutdown()
 
 
-def req(url, method="GET", body=None):
+def req(url, method="GET", body=None, headers=None):
     request = urllib.request.Request(
         url,
         method=method,
         data=json.dumps(body).encode() if body is not None else None,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "X-PR-Triage": "1", **(headers or {})},
     )
     try:
         with urllib.request.urlopen(request) as resp:
@@ -97,10 +97,60 @@ def test_missing_number_is_400(base_url):
 
 
 def test_checkout_routes_to_do_checkout(base_url, monkeypatch):
-    monkeypatch.setattr(pr_triage, "do_checkout", lambda n: {"path": "/repo", "branch": f"pr-{n}"})
-    status, body = req(base_url + "/api/checkout", method="POST", body={"number": 5})
+    monkeypatch.setattr(
+        pr_triage,
+        "do_checkout",
+        lambda n, opener=None: {"path": "/repo", "branch": f"pr-{n}", "opened": opener},
+    )
+    status, body = req(
+        base_url + "/api/checkout", method="POST", body={"number": 5, "open": "code"}
+    )
     assert status == 200
-    assert body == {"path": "/repo", "branch": "pr-5"}
+    assert body == {"path": "/repo", "branch": "pr-5", "opened": "code"}
+
+
+class TestGuard:
+    """These endpoints run git, gh and the open command, so another origin in
+    the user's browser must not be able to reach them."""
+
+    def test_rejects_a_post_without_the_custom_header(self, base_url, monkeypatch):
+        monkeypatch.setattr(pr_triage, "do_checkout", lambda *a, **k: pytest.fail("ran"))
+        request = urllib.request.Request(
+            base_url + "/api/checkout",
+            method="POST",
+            data=b'{"number": 1, "open": "anything"}',
+            # A cross-origin form post can send text/plain without a preflight.
+            headers={"Content-Type": "text/plain"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request)
+        assert caught.value.code == 403
+
+    def test_rejects_a_foreign_origin(self, base_url, monkeypatch):
+        monkeypatch.setattr(pr_triage, "do_checkout", lambda *a, **k: pytest.fail("ran"))
+        status, body = req(
+            base_url + "/api/checkout",
+            method="POST",
+            body={"number": 1},
+            headers={"Origin": "https://evil.example"},
+        )
+        assert status == 403
+        assert "cross-origin" in body["error"]
+
+    def test_allows_its_own_origin(self, base_url, monkeypatch):
+        monkeypatch.setattr(pr_triage, "do_checkout", lambda n, opener=None: {"ok": True})
+        status, _ = req(
+            base_url + "/api/checkout",
+            method="POST",
+            body={"number": 1},
+            headers={"Origin": f"http://localhost:{pr_triage.PORT}"},
+        )
+        assert status == 200
+
+    def test_get_requests_are_not_guarded(self, base_url):
+        # The dashboard must load before any of its JS can set a header.
+        with urllib.request.urlopen(urllib.request.Request(base_url + "/")) as resp:
+            assert resp.status == 200
 
 
 def test_labels_post_routes_to_do_edit(base_url, monkeypatch):

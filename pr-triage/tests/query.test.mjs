@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { hasTerm, term, toggleTerm, tokenize } from "../query.mjs";
+import { hasTerms, term, toggleTerms, tokenize } from "../query.mjs";
 
 describe("tokenize", () => {
   it("returns an empty list for an empty query", () => {
@@ -49,53 +49,70 @@ describe("term", () => {
   });
 });
 
-describe("hasTerm", () => {
+describe("hasTerms", () => {
   it("finds an exact token", () => {
-    assert.equal(hasTerm('is:open label:"wg:toolbox"', 'label:"wg:toolbox"'), true);
+    assert.equal(hasTerms('is:open label:"wg:toolbox"', 'label:"wg:toolbox"'), true);
   });
 
   it("ignores case", () => {
-    assert.equal(hasTerm("is:open AUTHOR:octocat", "author:octocat"), true);
+    assert.equal(hasTerms("is:open AUTHOR:octocat", "author:octocat"), true);
   });
 
   it("does not match a prefix of another token", () => {
-    assert.equal(hasTerm("label:bugfix", "label:bug"), false);
-    assert.equal(hasTerm('label:"wg:toolbox-extra"', 'label:"wg:toolbox"'), false);
+    assert.equal(hasTerms("label:bugfix", "label:bug"), false);
+    assert.equal(hasTerms('label:"wg:toolbox-extra"', 'label:"wg:toolbox"'), false);
   });
 
   it("is false for an empty query", () => {
-    assert.equal(hasTerm("", "label:bug"), false);
+    assert.equal(hasTerms("", "label:bug"), false);
+  });
+
+  it("needs every token of a multi-token filter, in any order", () => {
+    assert.equal(hasTerms('is:open "[infra]" in:title', '"[infra]" in:title'), true);
+    assert.equal(hasTerms('in:title is:open "[infra]"', '"[infra]" in:title'), true);
+    assert.equal(hasTerms('is:open "[infra]"', '"[infra]" in:title'), false);
   });
 });
 
-describe("toggleTerm", () => {
+describe("toggleTerms", () => {
   it("adds a term that is absent", () => {
-    assert.equal(toggleTerm("is:open", "author:octocat"), "is:open author:octocat");
+    assert.equal(toggleTerms("is:open", "author:octocat"), "is:open author:octocat");
   });
 
   it("removes a term that is present", () => {
-    assert.equal(toggleTerm("is:open author:octocat", "author:octocat"), "is:open");
+    assert.equal(toggleTerms("is:open author:octocat", "author:octocat"), "is:open");
   });
 
   it("round-trips back to the original query", () => {
     const start = 'is:open label:"wg:toolbox"';
-    const added = toggleTerm(start, "author:octocat");
-    assert.equal(toggleTerm(added, "author:octocat"), start);
+    const added = toggleTerms(start, "author:octocat");
+    assert.equal(toggleTerms(added, "author:octocat"), start);
   });
 
   it("preserves the order of the other tokens", () => {
-    assert.equal(
-      toggleTerm('is:open label:"a b" is:pr', 'label:"a b"'),
-      "is:open is:pr",
-    );
+    assert.equal(toggleTerms('is:open label:"a b" is:pr', 'label:"a b"'), "is:open is:pr");
   });
 
   it("adds to an empty query without leading whitespace", () => {
-    assert.equal(toggleTerm("", "label:bug"), "label:bug");
-    assert.equal(toggleTerm("   ", "label:bug"), "label:bug");
+    assert.equal(toggleTerms("", "label:bug"), "label:bug");
+    assert.equal(toggleTerms("   ", "label:bug"), "label:bug");
   });
 
   it("removes every copy of a duplicated term", () => {
-    assert.equal(toggleTerm("is:open is:open label:bug", "is:open"), "label:bug");
+    assert.equal(toggleTerms("is:open is:open label:bug", "is:open"), "label:bug");
+  });
+
+  it("adds and removes every token of a multi-token filter", () => {
+    const added = toggleTerms("is:open", '"[infra]" in:title');
+    assert.equal(added, 'is:open "[infra]" in:title');
+    assert.equal(toggleTerms(added, '"[infra]" in:title'), "is:open");
+  });
+
+  it("completes a partly-applied multi-token filter instead of duplicating", () => {
+    // in:title is already there from another scope box.
+    assert.equal(
+      toggleTerms("is:open in:title", '"[infra]" in:title'),
+      'is:open in:title "[infra]"',
+    );
   });
 });

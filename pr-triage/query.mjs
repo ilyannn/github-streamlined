@@ -22,16 +22,23 @@ export function term(kind, value) {
   return BARE_RE.test(safe) ? `${kind}:${safe}` : `${kind}:"${safe}"`;
 }
 
-export function hasTerm(query, wanted) {
-  const needle = wanted.toLowerCase();
-  return tokenize(query).some((token) => token.toLowerCase() === needle);
+// `wanted` is itself a query fragment, so a filter can be more than one token:
+// a scope box adds `"[infra]" in:title`, a label adds just `label:bug`.
+
+export function hasTerms(query, wanted) {
+  const have = new Set(tokenize(query).map((token) => token.toLowerCase()));
+  const needles = tokenize(wanted).map((token) => token.toLowerCase());
+  return needles.length > 0 && needles.every((needle) => have.has(needle));
 }
 
-/** Add `wanted` to the query, or remove it if already present. */
-export function toggleTerm(query, wanted) {
-  const needle = wanted.toLowerCase();
+/** Add every token of `wanted` to the query, or remove them all if all present. */
+export function toggleTerms(query, wanted) {
   const tokens = tokenize(query);
-  const kept = tokens.filter((token) => token.toLowerCase() !== needle);
-  if (kept.length !== tokens.length) return kept.join(" ");
-  return [...tokens, wanted].join(" ");
+  const needles = tokenize(wanted);
+  const lowered = needles.map((token) => token.toLowerCase());
+  if (hasTerms(query, wanted)) {
+    return tokens.filter((token) => !lowered.includes(token.toLowerCase())).join(" ");
+  }
+  const have = new Set(tokens.map((token) => token.toLowerCase()));
+  return [...tokens, ...needles.filter((token) => !have.has(token.toLowerCase()))].join(" ");
 }

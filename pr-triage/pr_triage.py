@@ -17,12 +17,15 @@ the current working directory; override with env vars to run from anywhere:
     PR_TRIAGE_PORT      port to listen on           (default 8642)
     PR_TRIAGE_REPO      owner/name                  (default: `gh repo view` in cwd)
     PR_TRIAGE_CHECKOUT  dir for the Checkout button (default: primary worktree of cwd)
+    PR_TRIAGE_WORKTREES where worktrees are created (default: <checkout>/.worktrees)
     PR_TRIAGE_QUERY     default search query        (default: is:open)
 """
 
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,6 +42,8 @@ STATIC = {
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/query.mjs": ("query.mjs", "text/javascript; charset=utf-8"),
 }
+
+ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
 
 LOGIN_RE = re.compile(r"^[A-Za-z0-9-]{1,39}$")
 # Label names may contain letters, digits, spaces and common punctuation,
@@ -77,6 +82,13 @@ query($q: String!) {
 def sh(args, cwd=None, timeout=90):
     proc = subprocess.run(args, capture_output=True, text=True, cwd=cwd, timeout=timeout)
     return proc.returncode, proc.stdout, proc.stderr
+
+
+def spawn(args):
+    """Start a process and leave it running — an editor outlives this request."""
+    subprocess.Popen(
+        args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+    )
 
 
 def detect_repo():
@@ -215,6 +227,9 @@ def fetch_prs(user_query):
         raise RuntimeError(err.strip() or out.strip())
     data = json.loads(out)["data"]
     me = data["viewer"]["login"]
+    # One listing for the whole page, so each row can say whether its worktree
+    # is already there ("Open") or still has to be made ("Add").
+    trees = list_worktrees()
 
     prs = []
     for pr in data["search"]["nodes"]:
@@ -222,6 +237,7 @@ def fetch_prs(user_query):
             continue
         bucket, badges = classify(pr, me)
         done, total = count_tasks(pr.get("body"))
+        found = find_worktree(trees, pr["number"], pr["headRefName"])
         prs.append(
             {
                 "number": pr["number"],
@@ -243,6 +259,7 @@ def fetch_prs(user_query):
                 "tasksTotal": total,
                 "bucket": bucket,
                 "badges": badges,
+                "worktree": found[0] if found else None,
             }
         )
     return {
@@ -255,21 +272,120 @@ def fetch_prs(user_query):
     }
 
 
-def do_checkout(number):
+def parse_worktrees(porcelain):
+    """[(path, branch)] from `git worktree list --porcelain`; branch is None if detached."""
+    trees, path, branch = [], None, None
+    for line in porcelain.splitlines():
+        if line.startswith("worktree "):
+            if path is not None:
+                trees.append((path, branch))
+            path, branch = line.removeprefix("worktree "), None
+        elif line.startswith("branch "):
+            branch = line.removeprefix("branch ").removeprefix("refs/heads/")
+    if path is not None:
+        trees.append((path, branch))
+    return trees
+
+
+def worktree_dir(number):
+    base = os.getenv("PR_TRIAGE_WORKTREES", "")
+    root = Path(base).expanduser() if base else Path(MAIN_CHECKOUT) / ".worktrees"
+    return root / f"pr-{number}"
+
+
+def pr_head_branch(number):
+    rc, out, err = sh(
+        [
+            "gh",
+            "pr",
+            "view",
+            str(number),
+            "--repo",
+            REPO,
+            "--json",
+            "headRefName",
+            "--jq",
+            ".headRefName",
+        ]
+    )
+    if rc != 0:
+        raise RuntimeError(err.strip() or out.strip())
+    return out.strip()
+
+
+def list_worktrees():
+    if not MAIN_CHECKOUT:
+        return []
+    rc, out, err = sh(["git", "worktree", "list", "--porcelain"], cwd=MAIN_CHECKOUT)
+    if rc != 0:
+        raise RuntimeError(err.strip())
+    return parse_worktrees(out)
+
+
+def find_worktree(trees, number, branch):
+    """The worktree already holding this PR, as (path, branch), or None.
+
+    Either signal counts: the PR's branch is checked out somewhere, or the
+    directory this tool would create is already a worktree (it may hold the
+    PR under a different branch name, e.g. one made by `gh pr checkout -b`).
+    """
+    target = worktree_dir(number) if MAIN_CHECKOUT else None
+    for path, existing_branch in trees:
+        if (branch and existing_branch == branch) or (target and Path(path) == target):
+            return path, existing_branch or branch
+    return None
+
+
+def open_path(command, path):
+    """Run `<command> <path>` — the user's editor, file manager, or terminal."""
+    argv = shlex.split(command)
+    if not argv:
+        raise RuntimeError("No open command configured")
+    exe = shutil.which(argv[0])
+    if not exe:
+        raise RuntimeError(f"Command not found on PATH: {argv[0]}")
+    # No shell: the folder is a separate argv entry, so nothing in a branch or
+    # directory name can turn into shell syntax.
+    spawn([exe, *argv[1:], str(path)])
+
+
+def do_checkout(number, open_command=None):
+    """Put a PR in a worktree of its own, reusing one when it already exists.
+
+    A worktree leaves whatever you were doing in the main checkout untouched,
+    which is the whole point of reviewing from a dashboard: no stashing, and
+    several PRs can sit side by side.
+    """
     if not MAIN_CHECKOUT:
         raise RuntimeError(
             "No checkout configured — start from inside a repo or set PR_TRIAGE_CHECKOUT"
         )
-    rc, out, err = sh(["git", "status", "--porcelain", "--untracked-files=no"], cwd=MAIN_CHECKOUT)
-    if rc != 0:
-        raise RuntimeError(err.strip())
-    if out.strip():
-        raise RuntimeError(f"{MAIN_CHECKOUT} has uncommitted changes — commit or stash them first")
-    rc, out, err = sh(["gh", "pr", "checkout", str(number)], cwd=MAIN_CHECKOUT)
+    branch = pr_head_branch(number)
+    existing = find_worktree(list_worktrees(), number, branch)
+    if existing:
+        path, existing_branch = existing
+        result = {"path": path, "branch": existing_branch, "created": False}
+        if open_command:
+            open_path(open_command, path)
+            result["opened"] = open_command
+        return result
+
+    target = worktree_dir(number)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    rc, out, err = sh(["git", "worktree", "add", "--detach", str(target)], cwd=MAIN_CHECKOUT)
     if rc != 0:
         raise RuntimeError(err.strip() or out.strip())
-    rc, branch, _ = sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=MAIN_CHECKOUT)
-    return {"path": MAIN_CHECKOUT, "branch": branch.strip()}
+    # Detached first, then let gh name and track the branch — it knows how to
+    # reach a fork's head, which a plain `git worktree add <branch>` does not.
+    rc, out, err = sh(["gh", "pr", "checkout", str(number), "--repo", REPO], cwd=str(target))
+    if rc != 0:
+        sh(["git", "worktree", "remove", "--force", str(target)], cwd=MAIN_CHECKOUT)
+        raise RuntimeError(err.strip() or out.strip())
+    result = {"path": str(target), "branch": branch, "created": True}
+    if open_command:
+        open_path(open_command, target)
+        result["opened"] = open_command
+    return result
 
 
 def do_edit(number, add_flag, remove_flag, add, remove, validator, what):
@@ -335,13 +451,28 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # surface any gh/parse failure to the UI banner
             self.send_json(500, {"error": str(e)})
 
+    def guard(self):
+        """Refuse POSTs that another site in the browser could have sent.
+
+        These endpoints run git, gh, and the configured open command, so a page
+        on any origin must not be able to reach them. Requiring a header that
+        is not CORS-safelisted forces a preflight, which this server never
+        answers, and the Origin check covers the simple requests that skip one.
+        """
+        origin = self.headers.get("Origin")
+        if origin and origin not in ALLOWED_ORIGINS:
+            raise PermissionError(f"cross-origin request from {origin}")
+        if self.headers.get("X-PR-Triage") != "1":
+            raise PermissionError("missing X-PR-Triage header")
+
     def do_POST(self):
         url = urlparse(self.path)
         try:
+            self.guard()
             body = self.read_body()
             number = int(body["number"])
             if url.path == "/api/checkout":
-                self.send_json(200, do_checkout(number))
+                self.send_json(200, do_checkout(number, body.get("open")))
             elif url.path == "/api/labels":
                 self.send_json(
                     200,
@@ -370,6 +501,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
             else:
                 self.send_json(404, {"error": "not found"})
+        except PermissionError as e:
+            self.send_json(403, {"error": str(e)})
         except (KeyError, ValueError) as e:
             self.send_json(400, {"error": f"bad request: {e}"})
         except Exception as e:

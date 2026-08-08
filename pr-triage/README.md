@@ -14,22 +14,35 @@ Open PRs are grouped into action buckets:
 | ⏳ Waiting | On the author or other reviewers — nothing for you to do |
 | 📝 Drafts | Not ready for review |
 
-Per-PR actions: **⎇ Checkout** (runs `gh pr checkout` in your primary
-checkout, refusing if it has uncommitted tracked changes), **🏷 Labels**
-(toggle any repo label), **👤 Assign** (one-click assign-me, or add/remove
-any login).
+## Worktrees
+
+The button on each card is **⎇ Add worktree** when the PR has no worktree yet
+and **📂 Open worktree** when it does. Adding one creates
+`<checkout>/.worktrees/pr-<number>` and lets `gh` check the PR out there, so
+your main checkout keeps whatever you were doing — no stashing, and several
+PRs can sit side by side. A PR counts as already having a worktree if its
+branch is checked out anywhere, or if that directory is a worktree already.
+
+Either way the folder is then opened with a command of your choice, asked for
+the first time you use the button and saved in the browser (`code`, `cursor`,
+`zed`, `open`, …). It runs as `<command> <folder>` with no shell involved.
+Change it any time from the header.
 
 ## Filtering by clicking
 
-Most things on a card are a filter toggle: click a **label**, an **author**
-(name or avatar), an **assignee**, or an **approved** / **changes requested** /
-**your review requested** badge to add that term to the query, and click it
-again to remove it. Applied filters are outlined, so you can always see what
-is narrowing the list. **CI** badges link to the PR's checks instead — GitHub
-search has no qualifier for them.
+Most things on a card are a filter toggle: click the **[scope]** box at the
+start of a title, a **label**, an **author** (name or avatar), an **assignee**,
+or an **approved** / **changes requested** / **your review requested** badge to
+add that term to the query, and click it again to remove it. Applied filters
+are outlined, so you can always see what is narrowing the list. **CI** badges
+link to the PR's checks instead — GitHub search has no qualifier for them.
 
-Section headers collapse and expand (remembered across reloads), the repo name
-opens the PR list on github.com, and ✕ resets the query.
+To edit rather than filter, hover a card: a ✎ appears after the labels and
+after the assignees, opening the same pickers the buttons used to.
+
+Section headers collapse and expand (remembered across reloads), the heading
+and repo name open the repo and its PR list on github.com, and ✕ resets the
+query.
 
 | Key | |
 | --- | --- |
@@ -63,16 +76,21 @@ sticks across reloads. The page auto-refreshes every 2 minutes.
 | --- | --- | --- |
 | `PR_TRIAGE_PORT` | `8642` | Listen port (localhost only) |
 | `PR_TRIAGE_REPO` | detected via `gh repo view` in cwd | `owner/name` to triage |
-| `PR_TRIAGE_CHECKOUT` | primary worktree of cwd's repo | Directory the Checkout button operates on |
+| `PR_TRIAGE_CHECKOUT` | primary worktree of cwd's repo | Repo the worktree button operates on |
+| `PR_TRIAGE_WORKTREES` | `<checkout>/.worktrees` | Where new worktrees are created |
 | `PR_TRIAGE_QUERY` | `is:open` | Default search query |
 
 ## Security model
 
 The server binds to `127.0.0.1` only. All GitHub access goes through your
-authenticated `gh` CLI; the server itself holds no tokens. Mutating endpoints
-run fixed `gh`/`git` commands with validated arguments (no shell
-interpolation), and Checkout refuses to touch a checkout with uncommitted
-tracked changes.
+authenticated `gh` CLI; the server itself holds no tokens. Commands are built
+as argument lists and never go through a shell, so nothing in a branch name,
+label, or path can turn into shell syntax.
+
+Because these endpoints run `git`, `gh`, and your open command, `POST`s must
+carry an `X-PR-Triage` header and may not come from another origin. The header
+is not CORS-safelisted, so a page on any other site would need a preflight this
+server never answers.
 
 ## Tests
 
