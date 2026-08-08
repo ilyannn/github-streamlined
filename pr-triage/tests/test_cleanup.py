@@ -1,6 +1,7 @@
 """Cleanup candidates and the guarded removal that follows."""
 
 import json
+from pathlib import Path
 
 import pr_triage
 import pytest
@@ -172,6 +173,34 @@ class TestMergeMethod:
             ),
         )
         assert pr_triage.merge_method() == "MERGE"
+
+    def test_merge_sends_an_edited_message_through_a_file(self, repo, monkeypatch):
+        monkeypatch.setattr(pr_triage, "_merge_method", "SQUASH")
+        seen = {}
+
+        def fake_sh(args, **kwargs):
+            seen["args"] = args
+            seen["body"] = Path(args[args.index("--body-file") + 1]).read_text()
+            return 0, "merged", ""
+
+        monkeypatch.setattr(pr_triage, "sh", fake_sh)
+        pr_triage.do_merge(7, "Custom subject (#7)", "Line one\n\nLine two")
+
+        assert "--subject" in seen["args"]
+        assert seen["args"][seen["args"].index("--subject") + 1] == "Custom subject (#7)"
+        assert seen["body"] == "Line one\n\nLine two"
+        # The temp file must not outlive the call.
+        assert not Path(seen["args"][seen["args"].index("--body-file") + 1]).exists()
+
+    def test_merge_without_edits_lets_github_compose(self, repo, monkeypatch):
+        monkeypatch.setattr(pr_triage, "_merge_method", "SQUASH")
+        calls = []
+        monkeypatch.setattr(
+            pr_triage, "sh", lambda args, **k: (calls.append(args), (0, "merged", ""))[1]
+        )
+        pr_triage.do_merge(7)
+        assert "--subject" not in calls[0]
+        assert "--body-file" not in calls[0]
 
     def test_merge_passes_the_matching_flag(self, repo, monkeypatch):
         monkeypatch.setattr(pr_triage, "_merge_method", "SQUASH")

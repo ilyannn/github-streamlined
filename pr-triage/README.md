@@ -62,6 +62,15 @@ merge**, **Rebase and merge** or **Merge**, read from its settings rather than
 assumed. It opens a dialog with what is still outstanding — unresolved review
 threads and unticked tasks — above a single large button that merges.
 
+**✎ Edit commit message** there opens the message GitHub itself would commit,
+composed from the repository's own settings (whether the subject comes from
+the PR title or a lone commit, and whether the body comes from the PR body,
+the commit messages, or nothing). Leave it closed and GitHub composes the
+message as usual; open it and what you type is what lands.
+
+Task text and comment bodies render the markdown they contain — code spans,
+fenced blocks, emphasis, links, `#1234` references and `@mentions`.
+
 ## Cleaning up
 
 The worktree panel has **🧹 Clean up**, which lists worktrees and local

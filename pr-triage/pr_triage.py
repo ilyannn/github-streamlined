@@ -44,6 +44,7 @@ STATIC = {
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/query.mjs": ("query.mjs", "text/javascript; charset=utf-8"),
     "/paths.mjs": ("paths.mjs", "text/javascript; charset=utf-8"),
+    "/markdown.mjs": ("markdown.mjs", "text/javascript; charset=utf-8"),
 }
 
 ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
@@ -538,13 +539,116 @@ def merge_method():
     return _merge_method
 
 
-def do_merge(number):
+_commit_config = None
+
+
+def commit_config():
+    """How this repo composes a merge commit, from its settings.
+
+    GitHub builds the message from the PR title and body (or the commits, or
+    nothing) depending on four repository settings; the editor should open on
+    whatever the button would have produced, not on a guess.
+    """
+    global _commit_config
+    if _commit_config is None:
+        rc, out, err = sh(
+            [
+                "gh",
+                "api",
+                f"repos/{REPO}",
+                "--jq",
+                "{squashTitle: .squash_merge_commit_title,"
+                " squashMessage: .squash_merge_commit_message,"
+                " mergeTitle: .merge_commit_title, mergeMessage: .merge_commit_message}",
+            ]
+        )
+        if rc != 0:
+            raise RuntimeError(err.strip() or out.strip())
+        _commit_config = json.loads(out)
+    return _commit_config
+
+
+def commit_messages(commits):
+    parts = []
+    for commit in commits:
+        headline = commit.get("messageHeadline", "")
+        rest = commit.get("messageBody", "").strip()
+        parts.append(f"{headline}\n\n{rest}" if rest else headline)
+    return "\n\n".join(parts)
+
+
+def merge_message(number):
+    """The subject and body GitHub would commit, for the editor to open on."""
     method = merge_method()
     if not method:
         raise RuntimeError("This repository allows no merge method")
-    rc, out, err = sh(["gh", "pr", "merge", str(number), "--repo", REPO, MERGE_FLAGS[method]])
+    if method == "REBASE":
+        # Rebasing replays the PR's own commits; there is no message to write.
+        return {"method": method, "editable": False, "subject": "", "body": ""}
+
+    rc, out, err = sh(
+        [
+            "gh",
+            "pr",
+            "view",
+            str(number),
+            "--repo",
+            REPO,
+            "--json",
+            "title,body,number,headRefName,commits",
+        ]
+    )
     if rc != 0:
         raise RuntimeError(err.strip() or out.strip())
+    pr = json.loads(out)
+    commits = pr.get("commits") or []
+    config = commit_config()
+    # GitHub trims the title before composing; a PR titled with a trailing
+    # space would otherwise give "… v0.5.3  (#1311)".
+    pr_title = f"{pr['title'].strip()} (#{pr['number']})"
+
+    if method == "SQUASH":
+        if config.get("squashTitle") == "COMMIT_OR_PR_TITLE" and len(commits) == 1:
+            subject = commits[0].get("messageHeadline", pr_title)
+        else:
+            subject = pr_title
+        message = config.get("squashMessage") or "PR_BODY"
+        body = {"PR_BODY": pr.get("body") or "", "COMMIT_MESSAGES": commit_messages(commits)}.get(
+            message, ""
+        )
+    else:
+        subject = (
+            pr_title
+            if config.get("mergeTitle") == "PR_TITLE"
+            else f"Merge pull request #{pr['number']} from {pr['headRefName']}"
+        )
+        message = config.get("mergeMessage") or "PR_TITLE"
+        body = {"PR_BODY": pr.get("body") or "", "PR_TITLE": pr["title"]}.get(message, "")
+
+    return {"method": method, "editable": True, "subject": subject, "body": body}
+
+
+def do_merge(number, subject=None, body=None):
+    method = merge_method()
+    if not method:
+        raise RuntimeError("This repository allows no merge method")
+    args = ["gh", "pr", "merge", str(number), "--repo", REPO, MERGE_FLAGS[method]]
+    path = None
+    if subject:
+        args += ["--subject", subject]
+    if body is not None:
+        # Through a file, so newlines and backticks reach git untouched.
+        with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as handle:
+            handle.write(body)
+            path = handle.name
+        args += ["--body-file", path]
+    try:
+        rc, out, err = sh(args)
+        if rc != 0:
+            raise RuntimeError(err.strip() or out.strip())
+    finally:
+        if path:
+            os.unlink(path)
     return {"number": number, "method": method, "output": (out or err).strip()}
 
 
@@ -879,6 +983,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
             elif url.path == "/api/tasks":
                 self.send_json(200, fetch_tasks(int(parse_qs(url.query).get("number", ["0"])[0])))
+            elif url.path == "/api/merge-message":
+                self.send_json(200, merge_message(int(parse_qs(url.query).get("number", ["0"])[0])))
             else:
                 self.send_json(404, {"error": "not found"})
         except Exception as e:  # surface any gh/parse failure to the UI banner
@@ -914,7 +1020,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, set_task(number, body["index"], body["done"]))
                 return
             if url.path == "/api/merge":
-                self.send_json(200, do_merge(number))
+                self.send_json(200, do_merge(number, body.get("subject"), body.get("body")))
                 return
             if url.path == "/api/checkout":
                 self.send_json(200, do_checkout(number, body.get("open")))

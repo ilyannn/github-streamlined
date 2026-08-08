@@ -25,13 +25,26 @@
   header {
     display: flex; align-items: center; gap: 12px; padding: 12px 20px;
     background: var(--panel); border-bottom: 1px solid var(--border);
-    position: sticky; top: 0; z-index: 10;
+    position: sticky; top: 0; z-index: 10; flex-wrap: wrap;
+  }
+  /* Repo and counts sit under the bar so a narrow window reflows them instead
+     of crushing the search box. */
+  .summary {
+    display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+    margin: 0 0 10px; color: var(--muted); font-size: 12px;
+  }
+  .summary a.repo { color: var(--muted); text-decoration: none; font-size: 13px; }
+  .summary a.repo:hover { color: var(--accent); text-decoration: underline; }
+  @media (max-width: 640px) {
+    header { gap: 8px; padding: 10px 14px; }
+    #worktrees .label { display: none; }
+    main { padding: 12px 14px 60px; }
   }
   header h1 { font-size: 15px; margin: 0; white-space: nowrap; }
   header a.home { color: var(--text); text-decoration: none; }
   header a.repo { color: var(--muted); font-weight: 400; text-decoration: none; }
   header a.home:hover, header a.repo:hover { color: var(--accent); text-decoration: underline; }
-  .search { flex: 1; display: flex; align-items: center; gap: 6px; position: relative; }
+  .search { flex: 1 1 260px; display: flex; align-items: center; gap: 6px; position: relative; }
   #query {
     flex: 1; min-width: 200px; padding: 6px 28px 6px 10px; border: 1px solid var(--border);
     border-radius: 6px; background: var(--bg); color: var(--text); font-size: 13px;
@@ -63,7 +76,7 @@
   }
   section h2:hover .caret { color: var(--text); }
   section h2 .caret {
-    color: var(--muted); font-size: 16px; width: 16px; display: inline-block;
+    color: var(--muted); font-size: 21px; width: 20px; display: inline-block;
     line-height: 1;
   }
   section h2 .count {
@@ -84,7 +97,13 @@
   .avatar-btn { background: none; border: none; padding: 0; margin-top: 2px; border-radius: 50%; }
   .avatar-btn:hover { background: none; outline: 2px solid var(--accent); }
   .pr .body { flex: 1; min-width: 0; }
-  .pr .title-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .pr .title-row {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    /* The label ✎ is parked in the gap at the end of the title line rather
+       than left to wrap onto a line of its own once the chips fill the row. */
+    position: relative; padding-right: 22px;
+  }
+  .pr .title-row > .anchor { position: absolute; top: 2px; right: 0; }
   .pr a.title { color: var(--text); text-decoration: none; font-weight: 600; }
   .pr a.title:hover { color: var(--accent); }
   .pr .num { color: var(--muted); font-weight: 400; }
@@ -219,6 +238,23 @@
   button.merge:hover { background: #1a7f37; }
   button.cta { width: 100%; padding: 10px; font-size: 14px; margin-top: 4px; }
   .merge-note { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
+  .merge-row { display: flex; gap: 8px; align-items: stretch; margin-top: 12px; }
+  .merge-row .cta { margin-top: 0; }
+  .merge-row [data-edit-msg] { white-space: nowrap; }
+  .commit-msg input, .commit-msg textarea {
+    width: 100%; padding: 6px 10px; margin-bottom: 8px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg); color: var(--text);
+    font: 12px/1.5 ui-monospace, monospace; resize: vertical;
+  }
+  .note-body code, .task code, .modal code {
+    background: var(--hover); border-radius: 4px; padding: 0 4px;
+    font: 12px ui-monospace, monospace;
+  }
+  .note-body pre {
+    background: var(--hover); border-radius: 6px; padding: 8px 10px; overflow-x: auto;
+    margin: 6px 0;
+  }
+  .note-body pre code { background: none; padding: 0; }
   .modal code {
     font: 12px ui-monospace, monospace; background: var(--hover);
     padding: 1px 4px; border-radius: 4px;
@@ -257,25 +293,30 @@
 </head>
 <body>
 <header>
-  <h1><a class="home" id="home" target="_blank" rel="noreferrer">PR Triage</a>
-    <a class="repo" id="repo" target="_blank" rel="noreferrer"></a></h1>
+  <h1><a class="home" id="home" target="_blank" rel="noreferrer">PR Triage</a></h1>
   <div class="search">
-    <input id="query" spellcheck="false" placeholder="GitHub search syntax — press / to focus, Enter to apply">
+    <input id="query" spellcheck="false" placeholder="GitHub search syntax — / to focus, Enter to apply">
     <button id="clear" title="Reset to the default query">✕</button>
   </div>
   <span class="anchor"><button id="worktrees"
-    title="Find a worktree and open it (w)">🌳 Worktrees</button></span>
+    title="Find a worktree and open it (w)">🌳 <span class="label">Worktrees</span></button></span>
   <button class="primary" id="refresh" title="Refresh (r)">Refresh</button>
-  <span id="status"></span>
   <span id="viewer"></span>
 </header>
 <main>
+  <!-- Repo and counts live here rather than the bar, so a narrow window drops
+       them onto their own line instead of squeezing the search box. -->
+  <div class="summary">
+    <a class="repo" id="repo" target="_blank" rel="noreferrer"></a>
+    <span id="status"></span>
+  </div>
   <div id="error"></div>
   <div id="sections"><div class="empty">Loading…</div></div>
 </main>
 <div id="toasts"></div>
 
 <script type="module">
+import { render as md } from "./markdown.mjs";
 import { prNumberFromPath, shortPath } from "./paths.mjs";
 import { hasTerms, term, toggleTerms } from "./query.mjs";
 
@@ -402,7 +443,7 @@ async function load() {
         ><img src="${esc(data.viewer.avatarUrl)}" title="Signed in as ${esc(data.viewer.login)}"></a>`;
     $("#error").style.display = "none";
     $("#worktrees").innerHTML =
-      `🌳 Worktrees <span class="count">${data.worktreeCount}</span>`;
+      `🌳 <span class="label">Worktrees</span> <span class="count">${data.worktreeCount}</span>`;
     render();
     const when = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     $("#status").textContent = `${data.prs.length} PRs · updated ${when}`;
@@ -674,7 +715,7 @@ async function commentsModal(pr) {
               <div class="note-head"><b>${esc(c.author)}</b> ${when(c.at)}
                 <a href="${esc(c.url)}" target="_blank" rel="noreferrer" title="Open on GitHub">↗</a>
               </div>
-              <div class="note-body">${esc(c.body)}</div>
+              <div class="note-body">${md(c.body, state.repo)}</div>
             </div>`).join("")}
         </div>`;
       }
@@ -686,7 +727,7 @@ async function commentsModal(pr) {
           <span class="badge ${kind}">${label}</span> ${when(entry.at)}
           <a href="${esc(entry.url)}" target="_blank" rel="noreferrer" title="Open on GitHub">↗</a>
         </div>
-        ${entry.body ? `<div class="note-body">${esc(entry.body)}</div>` : ""}
+        ${entry.body ? `<div class="note-body">${md(entry.body, state.repo)}</div>` : ""}
       </div>`;
     }).join("");
   });
@@ -699,7 +740,7 @@ async function tasksModal(pr) {
         ? `<div class="tasks">${data.tasks.map(t => `
             <label class="task${t.done ? " done" : ""}">
               <input type="checkbox" data-index="${t.index}" ${t.done ? "checked" : ""}>
-              <span>${esc(t.text)}</span>
+              <span>${md(t.text, state.repo)}</span>
             </label>`).join("")}</div>
            <p class="hint-line">Ticking a box edits the pull request body on GitHub.</p>`
         : `<div class="none">No task list in this PR's description</div>`;
@@ -766,25 +807,62 @@ async function mergeModal(pr) {
               <div class="note${i ? " reply" : ""}">
                 <div class="note-head"><b>${esc(c.author)}</b> ${when(c.at)}
                   <a href="${esc(c.url)}" target="_blank" rel="noreferrer">↗</a></div>
-                <div class="note-body">${esc(c.body)}</div>
+                <div class="note-body">${md(c.body, state.repo)}</div>
               </div>`).join("")}
           </div>`).join("")}
         <h4>${undone.length ? `${undone.length} task${undone.length === 1 ? "" : "s"} left`
           : tasks.tasks.length ? "All tasks done" : "No task list"}</h4>
         ${undone.length ? `<div class="tasks">${undone.map(t =>
-          `<label class="task"><input type="checkbox" disabled><span>${esc(t.text)}</span></label>`
+          `<label class="task"><input type="checkbox" disabled><span>${md(t.text, state.repo)}</span></label>`
         ).join("")}</div>` : ""}
-        <button class="merge cta" data-go>${esc(mergeLabel())} #${pr.number}</button>
+        <div class="commit-msg" hidden>
+          <h4>Commit message</h4>
+          <input type="text" data-subject spellcheck="false">
+          <textarea data-body rows="8" spellcheck="false"></textarea>
+        </div>
+        <div class="merge-row">
+          <button data-edit-msg>✎ Edit commit message</button>
+          <button class="merge cta" data-go>${esc(mergeLabel())} #${pr.number}</button>
+        </div>
         <p class="hint-line">Merges on GitHub straight away. ${
           open.length || undone.length
             ? "There is unfinished business above."
             : "Nothing outstanding."}</p>`;
 
+      const editor = $(".commit-msg", body);
+      $("[data-edit-msg]", body).onclick = async e => {
+        const button = e.currentTarget;
+        if (!editor.hidden) { editor.hidden = true; button.textContent = "✎ Edit commit message"; return; }
+        button.disabled = true;
+        try {
+          const message = await api(`/api/merge-message?number=${pr.number}`);
+          if (!message.editable) {
+            toast(`${mergeLabel()} writes no commit message`, true);
+            return;
+          }
+          // Opens on exactly what GitHub would have committed.
+          $("[data-subject]", body).value = message.subject;
+          $("[data-body]", body).value = message.body;
+          editor.hidden = false;
+          button.textContent = "✕ Use the default message";
+          $("[data-subject]", body).focus();
+        } catch (err) {
+          toast(`Could not read the default message:\n${err.message}`, true);
+        } finally {
+          button.disabled = false;
+        }
+      };
+
       $("[data-go]", body).onclick = async () => {
         const go = $("[data-go]", body);
         go.disabled = true; go.textContent = "Merging…";
+        // Only send a message when the editor is open; otherwise let GitHub
+        // compose it from the repository's own settings.
+        const edited = !editor.hidden
+          ? { subject: $("[data-subject]", body).value, body: $("[data-body]", body).value }
+          : {};
         try {
-          const res = await api("/api/merge", post({ number: pr.number }));
+          const res = await api("/api/merge", post({ number: pr.number, ...edited }));
           close();
           toast(`#${pr.number} merged (${res.method.toLowerCase()})`);
           load();
