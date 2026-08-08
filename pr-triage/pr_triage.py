@@ -27,6 +27,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -59,7 +60,7 @@ query($q: String!) {
     nodes {
       ... on PullRequest {
         number title url body isDraft reviewDecision createdAt updatedAt
-        headRefName additions deletions
+        headRefName additions deletions mergeable mergeStateStatus
         author { login avatarUrl }
         labels(first: 20) { nodes { name color } }
         assignees(first: 10) { nodes { login } }
@@ -70,7 +71,7 @@ query($q: String!) {
             ... on Team { name }
           } }
         }
-        commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } }
+        commits(last: 1) { totalCount nodes { commit { committedDate statusCheckRollup { state } } } }
         reviews(last: 100) { nodes { author { login } state submittedAt } }
         comments(last: 100) { totalCount nodes { author { login } createdAt } }
       }
@@ -129,11 +130,65 @@ def ts(iso):
     return datetime.fromisoformat(iso.replace("Z", "+00:00"))
 
 
+# Groups: the bullet and opening bracket, the mark, the closing bracket, the text.
+TASK_RE = re.compile(r"^(\s*[-*]\s+\[)( |x|X)(\]\s*)(.*)$", re.MULTILINE)
+
+
+def parse_tasks(body):
+    return [
+        {"index": i, "done": found.group(2) in "xX", "text": found.group(4).strip()}
+        for i, found in enumerate(TASK_RE.finditer(body or ""))
+    ]
+
+
 def count_tasks(body):
-    if not body:
-        return 0, 0
-    boxes = re.findall(r"^\s*[-*]\s+\[( |x|X)\]", body, re.MULTILINE)
-    return sum(1 for b in boxes if b in "xX"), len(boxes)
+    tasks = parse_tasks(body)
+    return sum(1 for t in tasks if t["done"]), len(tasks)
+
+
+def toggle_task(body, index, done):
+    """Return the body with checkbox `index` set, leaving everything else byte for byte."""
+    seen = 0
+
+    def flip(found):
+        nonlocal seen
+        mark = ("x" if done else " ") if seen == index else found.group(2)
+        seen += 1
+        return found.group(1) + mark + found.group(3) + found.group(4)
+
+    updated = TASK_RE.sub(flip, body or "")
+    if index >= seen:
+        raise RuntimeError(f"No task #{index} on this pull request")
+    return updated
+
+
+def pr_body(number):
+    rc, out, err = sh(
+        ["gh", "pr", "view", str(number), "--repo", REPO, "--json", "body", "--jq", ".body"]
+    )
+    if rc != 0:
+        raise RuntimeError(err.strip() or out.strip())
+    return out
+
+
+def fetch_tasks(number):
+    return {"number": number, "tasks": parse_tasks(pr_body(number))}
+
+
+def set_task(number, index, done):
+    updated = toggle_task(pr_body(number), int(index), bool(done))
+    # Through a file rather than an argument: a PR body can be long, and this
+    # keeps every newline and backslash exactly as GitHub had it.
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as handle:
+        handle.write(updated)
+        path = handle.name
+    try:
+        rc, out, err = sh(["gh", "pr", "edit", str(number), "--repo", REPO, "--body-file", path])
+        if rc != 0:
+            raise RuntimeError(err.strip() or out.strip())
+    finally:
+        os.unlink(path)
+    return {"number": number, "tasks": parse_tasks(updated)}
 
 
 def classify(pr, me):
@@ -256,6 +311,13 @@ def fetch_prs(user_query):
                 "labels": pr["labels"]["nodes"],
                 "assignees": [a["login"] for a in pr["assignees"]["nodes"]],
                 "commentCount": pr["comments"]["totalCount"],
+                "commitCount": pr["commits"]["totalCount"],
+                "canMerge": (
+                    pr.get("mergeable") == "MERGEABLE"
+                    and pr.get("mergeStateStatus") in MERGEABLE_STATES
+                    and not pr["isDraft"]
+                ),
+                "mergeState": pr.get("mergeStateStatus"),
                 "tasksDone": done,
                 "tasksTotal": total,
                 "bucket": bucket,
@@ -269,6 +331,8 @@ def fetch_prs(user_query):
         "query": user_query,
         "issueCount": data["search"]["issueCount"],
         "mainCheckout": MAIN_CHECKOUT,
+        "worktreeCount": len(trees),
+        "mergeMethod": merge_method(),
         "prs": prs,
     }
 
@@ -389,6 +453,57 @@ def do_checkout(number, open_command=None):
     return result
 
 
+# Merge states where GitHub would still offer the button. DIRTY means conflicts,
+# BLOCKED means a required review or check is missing, DRAFT speaks for itself.
+MERGEABLE_STATES = ("CLEAN", "UNSTABLE", "BEHIND", "HAS_HOOKS")
+MERGE_FLAGS = {"SQUASH": "--squash", "MERGE": "--merge", "REBASE": "--rebase"}
+_merge_method = None
+
+
+def merge_method():
+    """The merge this repo actually allows, so the button can say which it is.
+
+    Repos commonly permit exactly one; asking beats assuming "merge commit".
+    """
+    global _merge_method
+    if _merge_method is None:
+        rc, out, err = sh(
+            [
+                "gh",
+                "repo",
+                "view",
+                REPO,
+                "--json",
+                "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed,viewerDefaultMergeMethod",
+            ]
+        )
+        if rc != 0:
+            raise RuntimeError(err.strip() or out.strip())
+        config = json.loads(out)
+        allowed = [
+            name
+            for name, key in (
+                ("SQUASH", "squashMergeAllowed"),
+                ("MERGE", "mergeCommitAllowed"),
+                ("REBASE", "rebaseMergeAllowed"),
+            )
+            if config.get(key)
+        ]
+        default = config.get("viewerDefaultMergeMethod")
+        _merge_method = default if default in allowed else (allowed[0] if allowed else None)
+    return _merge_method
+
+
+def do_merge(number):
+    method = merge_method()
+    if not method:
+        raise RuntimeError("This repository allows no merge method")
+    rc, out, err = sh(["gh", "pr", "merge", str(number), "--repo", REPO, MERGE_FLAGS[method]])
+    if rc != 0:
+        raise RuntimeError(err.strip() or out.strip())
+    return {"number": number, "method": method, "output": (out or err).strip()}
+
+
 def open_worktree(path, command):
     """Open one of this repo's worktrees.
 
@@ -400,6 +515,250 @@ def open_worktree(path, command):
         raise RuntimeError(f"Not a worktree of this repo: {path}")
     open_path(command, path)
     return {"path": path, "branch": known[0][1], "opened": command}
+
+
+COMMENTS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      title url
+      comments(first: 100) {
+        nodes { author { login } createdAt url body }
+      }
+      reviews(first: 100) {
+        nodes { author { login } state submittedAt url body }
+      }
+      reviewThreads(first: 100) {
+        nodes {
+          isResolved isOutdated path line
+          comments(first: 50) { nodes { author { login } createdAt url body } }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def trim(body, limit=600):
+    body = (body or "").strip()
+    return body if len(body) <= limit else body[:limit].rstrip() + "…"
+
+
+def fetch_comments(number):
+    """Everything said on a PR, as threads plus standalone comments.
+
+    Review threads are the tree part: a comment on a line, with its replies.
+    Reviews and issue comments have no children but belong in the timeline.
+    """
+    owner, _, name = REPO.partition("/")
+    rc, out, err = sh(
+        [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={COMMENTS_QUERY}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
+            "-F",
+            f"number={number}",
+        ]
+    )
+    if rc != 0:
+        raise RuntimeError(err.strip() or out.strip())
+    pr = json.loads(out)["data"]["repository"]["pullRequest"]
+    if not pr:
+        raise RuntimeError(f"No such pull request: #{number}")
+
+    threads = []
+    for thread in pr["reviewThreads"]["nodes"]:
+        comments = [
+            {
+                "author": (c.get("author") or {}).get("login", "ghost"),
+                "at": c["createdAt"],
+                "url": c["url"],
+                "body": trim(c["body"]),
+            }
+            for c in thread["comments"]["nodes"]
+        ]
+        if not comments:
+            continue
+        threads.append(
+            {
+                "kind": "thread",
+                "path": thread["path"],
+                "line": thread["line"],
+                "resolved": thread["isResolved"],
+                "outdated": thread["isOutdated"],
+                "at": comments[0]["at"],
+                "comments": comments,
+            }
+        )
+
+    singles = [
+        {
+            "kind": "review",
+            "state": r["state"],
+            "at": r["submittedAt"],
+            "url": r["url"],
+            "author": (r.get("author") or {}).get("login", "ghost"),
+            "body": trim(r["body"]),
+        }
+        for r in pr["reviews"]["nodes"]
+        # A review with no body is just the approval stamp already on the card.
+        if r.get("submittedAt") and (r["body"].strip() or r["state"] != "COMMENTED")
+    ] + [
+        {
+            "kind": "comment",
+            "at": c["createdAt"],
+            "url": c["url"],
+            "author": (c.get("author") or {}).get("login", "ghost"),
+            "body": trim(c["body"]),
+        }
+        for c in pr["comments"]["nodes"]
+    ]
+
+    return {
+        "number": number,
+        "title": pr["title"],
+        "url": pr["url"],
+        "entries": sorted(threads + singles, key=lambda e: e["at"]),
+    }
+
+
+PR_DIR_RE = re.compile(r"/pr-(\d+)/?$")
+GONE = ("CLOSED", "MERGED")
+
+
+def pr_index():
+    """Every PR in the repo, keyed by number and by head branch."""
+    rc, out, err = sh(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            REPO,
+            "--state",
+            "all",
+            "--limit",
+            "300",
+            "--json",
+            "number,state,headRefName,title",
+        ]
+    )
+    if rc != 0:
+        raise RuntimeError(err.strip() or out.strip())
+    by_branch, by_number = {}, {}
+    for pr in json.loads(out):
+        by_number[pr["number"]] = pr
+        # Branches get reused across PRs; the newest one wins, which is the
+        # one gh lists first.
+        by_branch.setdefault(pr["headRefName"], pr)
+    return by_branch, by_number
+
+
+def pr_for_worktree(path, branch, by_branch, by_number):
+    if branch and branch in by_branch:
+        return by_branch[branch]
+    found = PR_DIR_RE.search(path)
+    return by_number.get(int(found.group(1))) if found else None
+
+
+def is_dirty(path):
+    """True if `git worktree remove` would refuse — modified *or* untracked."""
+    rc, out, _ = sh(["git", "status", "--porcelain"], cwd=path)
+    return rc != 0 or bool(out.strip())
+
+
+def local_branches():
+    rc, out, err = sh(
+        ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/"], cwd=MAIN_CHECKOUT
+    )
+    if rc != 0:
+        raise RuntimeError(err.strip())
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def cleanup_candidates():
+    """Worktrees and branches whose PR is closed or merged.
+
+    The main checkout is never a candidate, and a dirty worktree is listed but
+    flagged, because removing it would throw away work that is not on a remote.
+    """
+    if not MAIN_CHECKOUT:
+        raise RuntimeError("No checkout configured")
+    trees = list_worktrees()
+    by_branch, by_number = pr_index()
+    live = {branch for _, branch in trees if branch}
+    items = []
+
+    for path, branch in trees:
+        if path == MAIN_CHECKOUT:
+            continue
+        pr = pr_for_worktree(path, branch, by_branch, by_number)
+        if not pr or pr["state"] not in GONE:
+            continue
+        items.append(
+            {
+                "kind": "worktree",
+                "name": path,
+                "branch": branch,
+                "number": pr["number"],
+                "state": pr["state"],
+                "title": pr["title"],
+                "dirty": is_dirty(path),
+            }
+        )
+
+    for branch in local_branches():
+        pr = by_branch.get(branch)
+        if not pr or pr["state"] not in GONE:
+            continue
+        items.append(
+            {
+                "kind": "branch",
+                "name": branch,
+                "branch": branch,
+                "number": pr["number"],
+                "state": pr["state"],
+                "title": pr["title"],
+                # Its worktree has to go first; git will not delete a checked-out branch.
+                "inWorktree": branch in live,
+            }
+        )
+    return {"items": items, "mainCheckout": MAIN_CHECKOUT}
+
+
+def do_cleanup(paths, branches):
+    """Remove the named worktrees, then delete the named branches.
+
+    Every name is checked against a freshly computed candidate list, so a
+    request cannot remove a worktree or branch that this tool would not offer.
+    """
+    items = cleanup_candidates()["items"]
+    removable = {i["name"] for i in items if i["kind"] == "worktree" and not i["dirty"]}
+    deletable = {i["name"] for i in items if i["kind"] == "branch"}
+    results = []
+
+    def run(kind, name, allowed, args):
+        if name not in allowed:
+            results.append({"kind": kind, "name": name, "error": f"not a {kind} of a closed PR"})
+            return
+        rc, out, err = sh(args, cwd=MAIN_CHECKOUT)
+        results.append(
+            {"kind": kind, "name": name} | ({"error": (err or out).strip()} if rc else {"ok": True})
+        )
+
+    # Worktrees first: a branch cannot be deleted while one has it checked out.
+    for path in paths:
+        run("worktree", path, removable, ["git", "worktree", "remove", path])
+    for branch in branches:
+        run("branch", branch, deletable, ["git", "branch", "-D", branch])
+    return {"results": results}
 
 
 def do_edit(number, add_flag, remove_flag, add, remove, validator, what):
@@ -468,6 +827,14 @@ class Handler(BaseHTTPRequestHandler):
                         "worktrees": [{"path": p, "branch": b} for p, b in list_worktrees()],
                     },
                 )
+            elif url.path == "/api/cleanup":
+                self.send_json(200, cleanup_candidates())
+            elif url.path == "/api/comments":
+                self.send_json(
+                    200, fetch_comments(int(parse_qs(url.query).get("number", ["0"])[0]))
+                )
+            elif url.path == "/api/tasks":
+                self.send_json(200, fetch_tasks(int(parse_qs(url.query).get("number", ["0"])[0])))
             else:
                 self.send_json(404, {"error": "not found"})
         except Exception as e:  # surface any gh/parse failure to the UI banner
@@ -495,7 +862,16 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/open":
                 self.send_json(200, open_worktree(body["path"], body.get("open")))
                 return
+            if url.path == "/api/cleanup":
+                self.send_json(200, do_cleanup(body.get("worktrees", []), body.get("branches", [])))
+                return
             number = int(body["number"])
+            if url.path == "/api/tasks":
+                self.send_json(200, set_task(number, body["index"], body["done"]))
+                return
+            if url.path == "/api/merge":
+                self.send_json(200, do_merge(number))
+                return
             if url.path == "/api/checkout":
                 self.send_json(200, do_checkout(number, body.get("open")))
             elif url.path == "/api/labels":

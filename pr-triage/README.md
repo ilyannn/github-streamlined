@@ -48,6 +48,29 @@ link to the PR's checks instead — GitHub search has no qualifier for them.
 To edit rather than filter, hover a card: a ✎ appears after the labels and
 after the assignees, opening the same pickers the buttons used to.
 
+The rest of the meta line opens things: **💬** shows the conversation as a
+tree — review threads with their replies, reviews and issue comments, each
+timestamped and linked; **☑** lists the PR's task list, and ticking a box
+there edits the pull request body on GitHub; the commit count and the
+**+/−** counts link to the commits and the diff.
+
+## Merging
+
+A PR that GitHub considers mergeable gets a green button under the worktree
+one, labelled with the method the repository actually allows — **Squash and
+merge**, **Rebase and merge** or **Merge**, read from its settings rather than
+assumed. It opens a dialog with what is still outstanding — unresolved review
+threads and unticked tasks — above a single large button that merges.
+
+## Cleaning up
+
+The worktree panel has **🧹 Clean up**, which lists worktrees and local
+branches belonging to closed or merged PRs. Merged ones start ticked; closed
+but unmerged ones do not, since a branch may hold the only copy of that work.
+Worktrees with uncommitted changes are shown but cannot be selected, the main
+checkout is never offered, and worktrees are removed before their branches so
+git does not refuse a checked-out branch.
+
 Section headers collapse and expand (remembered across reloads), the heading
 and repo name open the repo and its PR list on github.com, and ✕ resets the
 query.
@@ -94,6 +117,11 @@ The server binds to `127.0.0.1` only. All GitHub access goes through your
 authenticated `gh` CLI; the server itself holds no tokens. Commands are built
 as argument lists and never go through a shell, so nothing in a branch name,
 label, or path can turn into shell syntax.
+
+Anything destructive is checked against a freshly computed list on the server:
+`/api/open` only accepts a path git reports as a worktree, and cleanup only
+removes worktrees and branches it would itself have offered — a request cannot
+name an arbitrary directory or branch.
 
 Because these endpoints run `git`, `gh`, and your open command, `POST`s must
 carry an `X-PR-Triage` header and may not come from another origin. The header

@@ -34,6 +34,7 @@ def make_pr(
         "reviewDecision": decision,
         "author": {"login": author, "avatarUrl": ""} if author else None,
         "commits": {
+            "totalCount": 3,
             "nodes": [
                 {
                     "commit": {
@@ -41,7 +42,7 @@ def make_pr(
                         "statusCheckRollup": {"state": ci} if ci else None,
                     }
                 }
-            ]
+            ],
         },
         "reviews": {
             "nodes": [
@@ -239,3 +240,42 @@ class TestFetchPrs:
         assert (got["tasksDone"], got["tasksTotal"]) == (1, 2)
         assert got["assignees"] == ["alice"]
         assert got["labels"] == [{"name": "bug", "color": "ff0000"}]
+        assert got["commitCount"] == 3
+        assert got["worktree"] is None
+
+    def test_merge_readiness_travels_with_each_pr(self, monkeypatch):
+        def payload(mergeable, state):
+            pr = make_pr() | {
+                "number": 1,
+                "title": "t",
+                "url": "u",
+                "body": "",
+                "createdAt": t(0),
+                "updatedAt": t(1),
+                "headRefName": "b",
+                "additions": 1,
+                "deletions": 0,
+                "labels": {"nodes": []},
+                "assignees": {"nodes": []},
+                "mergeable": mergeable,
+                "mergeStateStatus": state,
+            }
+            return {
+                "data": {
+                    "viewer": {"login": ME, "avatarUrl": ""},
+                    "search": {"issueCount": 1, "nodes": [pr]},
+                }
+            }
+
+        def run(mergeable, state):
+            monkeypatch.setattr(
+                pr_triage, "sh", lambda args, **k: (0, json.dumps(payload(mergeable, state)), "")
+            )
+            monkeypatch.setattr(pr_triage, "merge_method", lambda: "SQUASH")
+            return pr_triage.fetch_prs("is:open")["prs"][0]["canMerge"]
+
+        assert run("MERGEABLE", "CLEAN") is True
+        assert run("MERGEABLE", "BEHIND") is True
+        assert run("MERGEABLE", "BLOCKED") is False  # a required check or review is missing
+        assert run("CONFLICTING", "DIRTY") is False
+        assert run("UNKNOWN", "UNKNOWN") is False  # GitHub has not worked it out yet

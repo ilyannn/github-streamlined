@@ -63,7 +63,8 @@
   }
   section h2:hover .caret { color: var(--text); }
   section h2 .caret {
-    color: var(--muted); font-size: 12px; width: 12px; display: inline-block;
+    color: var(--muted); font-size: 16px; width: 16px; display: inline-block;
+    line-height: 1;
   }
   section h2 .count {
     font-size: 12px; color: var(--muted); font-weight: 400;
@@ -75,7 +76,10 @@
     display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px;
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 8px; margin-bottom: 8px; box-shadow: 0 1px 2px var(--shadow);
+    scroll-margin-top: 64px;  /* clear the sticky header when jumped to */
   }
+  /* :target covers arriving via a #1257 link, .highlight the picker's hover. */
+  .pr.highlight, .pr:target { outline: 2px solid var(--accent); outline-offset: 1px; }
   .pr img.avatar { width: 28px; height: 28px; border-radius: 50%; display: block; }
   .avatar-btn { background: none; border: none; padding: 0; margin-top: 2px; border-radius: 50%; }
   .avatar-btn:hover { background: none; outline: 2px solid var(--accent); }
@@ -164,12 +168,54 @@
   }
   .modal h3 { margin: 0 0 6px; font-size: 15px; }
   .modal p { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
-  .modal input {
+  /* Text fields only — this used to catch checkboxes too and stretch them. */
+  .modal input[type="text"] {
     width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
     background: var(--bg); color: var(--text); font: 13px ui-monospace, monospace;
   }
   .modal .suggest { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
   .modal .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  .modal.wide { width: min(760px, 92vw); }
+  .modal-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+  .modal-head h3 { margin: 0; flex: 1; min-width: 0; }
+  .modal-head .sub { font-weight: 400; color: var(--muted); font-size: 13px; }
+  .modal-head .close { opacity: 1; font-size: 14px; }
+  .modal-body { max-height: 68vh; overflow-y: auto; }
+  .modal h4 { margin: 14px 0 6px; font-size: 12px; color: var(--muted); }
+  .thread {
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px;
+  }
+  .thread.resolved { opacity: .6; }
+  .thread-head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .where { font: 11px ui-monospace, monospace; color: var(--muted); }
+  .note { padding: 4px 0; }
+  .note.top { border-bottom: 1px solid var(--border); padding: 8px 0; }
+  .note.reply { margin-left: 14px; border-left: 2px solid var(--border); padding-left: 10px; }
+  .note-head {
+    font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: baseline;
+  }
+  .note-head a { text-decoration: none; color: var(--muted); }
+  .note-head a:hover { color: var(--accent); }
+  .note-body { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
+  .tasks { display: flex; flex-direction: column; gap: 2px; }
+  .task {
+    display: flex; gap: 8px; align-items: flex-start; padding: 5px 6px; border-radius: 6px;
+    font-size: 13px; cursor: pointer;
+  }
+  .task:hover { background: var(--hover); }
+  .task input[type="checkbox"] { flex: none; margin-top: 3px; }
+  .task .where { margin-left: 6px; }
+  .task.done > span { color: var(--muted); text-decoration: line-through; }
+  .task.blocked { opacity: .7; cursor: default; }
+  .hint-line { color: var(--muted); font-size: 11px; margin: 10px 0 0; }
+  .panel-head { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  /* GitHub's merge green, in both themes. */
+  button.merge {
+    background: #1f883d; border-color: #1f883d; color: #fff; font-weight: 600;
+  }
+  button.merge:hover { background: #1a7f37; }
+  button.cta { width: 100%; padding: 10px; font-size: 14px; margin-top: 4px; }
+  .merge-note { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
   .modal code {
     font: 12px ui-monospace, monospace; background: var(--hover);
     padding: 1px 4px; border-radius: 4px;
@@ -193,7 +239,6 @@
     display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .pr.highlight { outline: 2px solid var(--accent); outline-offset: 1px; }
   .panel .wt .path {
     display: block; font: 11px ui-monospace, monospace; color: var(--muted);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -216,7 +261,7 @@
     <button id="clear" title="Reset to the default query">✕</button>
   </div>
   <span class="anchor"><button id="worktrees"
-    title="Find a worktree and open it">🌳 Worktrees</button></span>
+    title="Find a worktree and open it (w)">🌳 Worktrees</button></span>
   <button class="primary" id="refresh" title="Refresh (r)">Refresh</button>
   <span id="status"></span>
   <span id="viewer"></span>
@@ -250,7 +295,9 @@ const BADGE_FILTERS = {
 const QUERY_KEY = "pr-triage-query";
 const COLLAPSED_KEY = "pr-triage-collapsed";
 
-const state = { prs: [], labels: [], viewer: null, repo: "", openPopover: null };
+const state = {
+  prs: [], labels: [], viewer: null, repo: "", mergeMethod: null, openPopover: null,
+};
 const collapsed = new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) || "[]"));
 const $ = (s, el) => (el || document).querySelector(s);
 
@@ -338,6 +385,7 @@ async function load() {
     state.prs = data.prs;
     state.viewer = data.viewer;
     state.repo = data.repo;
+    state.mergeMethod = data.mergeMethod;
     if (!qInput.value) qInput.value = data.query;
     const repo = $("#repo");
     repo.textContent = data.repo;
@@ -350,6 +398,8 @@ async function load() {
       `<a href="https://github.com/${esc(data.viewer.login)}" target="_blank" rel="noreferrer"
         ><img src="${esc(data.viewer.avatarUrl)}" title="Signed in as ${esc(data.viewer.login)}"></a>`;
     $("#error").style.display = "none";
+    $("#worktrees").innerHTML =
+      `🌳 Worktrees <span class="count">${data.worktreeCount}</span>`;
     render();
     const when = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     $("#status").textContent = `${data.prs.length} PRs · updated ${when}`;
@@ -399,6 +449,7 @@ function renderPR(pr) {
   const el = document.createElement("div");
   el.className = "pr";
   el.dataset.pr = pr.number;
+  el.id = pr.number;  // so "#1257" works as a real fragment link
 
   const badges = pr.badges.map(b => {
     // CI badges point at the run rather than a filter — there is no search
@@ -427,7 +478,10 @@ function renderPR(pr) {
         "flt", term("assignee", a), a, "", `Filter by assignee ${a}`)).join(", ") + editAssignees
     : ` · <span class="on-hover">👤 <span class="anchor"><button class="icon-btn"
         data-act="assign" title="Assign #${pr.number}">+ assign</button></span></span>`;
-  const tasks = pr.tasksTotal ? ` · ☑ ${pr.tasksDone}/${pr.tasksTotal}` : "";
+  const tasks = pr.tasksTotal
+    ? ` · <button class="flt" data-act="tasks" title="Show the task list on #${pr.number}"
+        >☑ ${pr.tasksDone}/${pr.tasksTotal}</button>`
+    : "";
 
   // Titles here are conventionally "[scope] what changed"; lift the scope out
   // into its own box so it reads as a tag and can filter like one.
@@ -451,10 +505,16 @@ function renderPR(pr) {
         ${badges}${labels}
       </div>
       <div class="meta">
-        by ${author} · opened ${relTime(pr.createdAt)} · updated ${relTime(pr.updatedAt)}
-        · <span class="add">+${pr.additions}</span> <span class="del">−${pr.deletions}</span>
-        · <a href="${esc(pr.url)}" target="_blank" rel="noreferrer"
-             title="Open the conversation">💬 ${pr.commentCount}</a>${tasks}${assignees}
+        by ${author} · ${stamp(pr.createdAt, "opened")}
+        · <a href="${esc(pr.url)}/commits" target="_blank" rel="noreferrer"
+            title="${pr.commitCount} commit${pr.commitCount === 1 ? "" : "s"} — open the commits"
+            >${pr.commitCount} commit${pr.commitCount === 1 ? "" : "s"}</a>
+        · ${stamp(pr.updatedAt, "updated")}
+        · <a href="${esc(pr.url)}/files" target="_blank" rel="noreferrer"
+            title="Open the changed files"><span class="add">+${pr.additions}</span>
+            <span class="del">−${pr.deletions}</span></a>
+        · <button class="flt" data-act="comments"
+            title="Show the conversation on #${pr.number}">💬 ${pr.commentCount}</button>${tasks}${assignees}
       </div>
     </div>
     <div class="actions">
@@ -462,9 +522,21 @@ function renderPR(pr) {
         ? `Open ${pr.worktree}`
         : `Create a worktree for #${pr.number} and open it`)}">${
         pr.worktree ? "📂 Open worktree" : "⎇ Add worktree"}</button>
+      ${pr.canMerge ? `<button class="merge" data-act="merge"
+        title="Review and ${esc(mergeLabel().toLowerCase())} #${pr.number}"
+        >${esc(mergeLabel())}</button>` : ""}
     </div>`;
 
   $('[data-act="checkout"]', el).onclick = () => checkout(pr, el);
+  $('[data-act="comments"]', el).onclick = e => { e.stopPropagation(); commentsModal(pr); };
+  $('[data-act="merge"]', el)?.addEventListener("click", e => {
+    e.stopPropagation();
+    mergeModal(pr);
+  });
+  $('[data-act="tasks"]', el)?.addEventListener("click", e => {
+    e.stopPropagation();
+    tasksModal(pr);
+  });
   for (const [act, show] of [["labels", labelPopover], ["assign", assignPopover]]) {
     const btn = $(`[data-act="${act}"]`, el);
     btn.onclick = e => {
@@ -527,6 +599,266 @@ function post(body) {
   };
 }
 
+// ------------------------------ modals --------------------------------------
+
+/** Build a backdrop + modal, resolve when it closes. Body is filled by `fill`. */
+function modal(title, cls, fill) {
+  const back = document.createElement("div");
+  back.className = "backdrop";
+  back.innerHTML = `<div class="modal ${cls}" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h3>${title}</h3>
+      <button class="icon-btn close" title="Close (Esc)">✕</button>
+    </div>
+    <div class="modal-body">Loading…</div>
+  </div>`;
+  document.body.appendChild(back);
+  const close = () => back.remove();
+  $(".close", back).onclick = close;
+  back.onclick = e => { if (e.target === back) close(); };
+  back.addEventListener("keydown", e => { if (e.key === "Escape") { e.stopPropagation(); close(); } });
+  document.addEventListener("keydown", function onEsc(e) {
+    if (e.key === "Escape" && document.body.contains(back)) { close(); }
+    if (!document.body.contains(back)) document.removeEventListener("keydown", onEsc);
+  });
+  fill($(".modal-body", back), close);
+  return back;
+}
+
+function when(iso) {
+  return `<time datetime="${esc(iso)}" title="${esc(new Date(iso).toLocaleString())}"
+    >${relTime(iso)}</time>`;
+}
+
+/** A bare relative time; which time it is lives in the tooltip. */
+function stamp(iso, what) {
+  return `<time datetime="${esc(iso)}"
+    title="${what} ${relTime(iso)} — ${esc(new Date(iso).toLocaleString())}"
+    >${relTime(iso)}</time>`;
+}
+
+const REVIEW_KIND = {
+  APPROVED: ["approved", "ok"],
+  CHANGES_REQUESTED: ["requested changes", "danger"],
+  COMMENTED: ["commented", "muted"],
+  DISMISSED: ["dismissed", "muted"],
+};
+
+async function commentsModal(pr) {
+  modal(`💬 #${pr.number} <span class="sub">${esc(pr.title)}</span>`, "wide", async body => {
+    let data;
+    try {
+      data = await api(`/api/comments?number=${pr.number}`);
+    } catch (e) {
+      body.innerHTML = `<div class="none">${esc(e.message)}</div>`;
+      return;
+    }
+    if (!data.entries.length) {
+      body.innerHTML = `<div class="none">Nothing said on this PR yet</div>`;
+      return;
+    }
+    body.innerHTML = data.entries.map(entry => {
+      if (entry.kind === "thread") {
+        const flags = [entry.resolved ? "resolved" : "", entry.outdated ? "outdated" : ""]
+          .filter(Boolean).map(f => `<span class="badge muted">${f}</span>`).join("");
+        return `<div class="thread${entry.resolved ? " resolved" : ""}">
+          <div class="thread-head">
+            <span class="where">${esc(entry.path)}${entry.line ? ":" + entry.line : ""}</span>
+            ${flags}
+          </div>
+          ${entry.comments.map((c, i) => `
+            <div class="note${i ? " reply" : ""}">
+              <div class="note-head"><b>${esc(c.author)}</b> ${when(c.at)}
+                <a href="${esc(c.url)}" target="_blank" rel="noreferrer" title="Open on GitHub">↗</a>
+              </div>
+              <div class="note-body">${esc(c.body)}</div>
+            </div>`).join("")}
+        </div>`;
+      }
+      const [label, kind] = entry.kind === "review"
+        ? (REVIEW_KIND[entry.state] || [entry.state.toLowerCase(), "muted"])
+        : ["comment", "muted"];
+      return `<div class="note top">
+        <div class="note-head"><b>${esc(entry.author)}</b>
+          <span class="badge ${kind}">${label}</span> ${when(entry.at)}
+          <a href="${esc(entry.url)}" target="_blank" rel="noreferrer" title="Open on GitHub">↗</a>
+        </div>
+        ${entry.body ? `<div class="note-body">${esc(entry.body)}</div>` : ""}
+      </div>`;
+    }).join("");
+  });
+}
+
+async function tasksModal(pr) {
+  modal(`☑ #${pr.number} <span class="sub">${esc(pr.title)}</span>`, "", async body => {
+    const draw = data => {
+      body.innerHTML = data.tasks.length
+        ? `<div class="tasks">${data.tasks.map(t => `
+            <label class="task${t.done ? " done" : ""}">
+              <input type="checkbox" data-index="${t.index}" ${t.done ? "checked" : ""}>
+              <span>${esc(t.text)}</span>
+            </label>`).join("")}</div>
+           <p class="hint-line">Ticking a box edits the pull request body on GitHub.</p>`
+        : `<div class="none">No task list in this PR's description</div>`;
+      for (const box of body.querySelectorAll("input[type=checkbox]")) {
+        box.onchange = async () => {
+          body.querySelectorAll("input").forEach(i => (i.disabled = true));
+          try {
+            draw(await api("/api/tasks", post({
+              number: pr.number, index: Number(box.dataset.index), done: box.checked,
+            })));
+            toast(`#${pr.number}: task ${box.checked ? "ticked" : "unticked"}`);
+            load();
+          } catch (e) {
+            toast(`#${pr.number}: ${e.message}`, true);
+            draw(data);  // put the box back where it was
+          }
+        };
+      }
+    };
+    try {
+      draw(await api(`/api/tasks?number=${pr.number}`));
+    } catch (e) {
+      body.innerHTML = `<div class="none">${esc(e.message)}</div>`;
+    }
+  });
+}
+
+/** "Squash and merge" / "Merge" / "Rebase and merge", per the repo's settings. */
+function mergeLabel() {
+  return { SQUASH: "Squash and merge", REBASE: "Rebase and merge" }[state.mergeMethod]
+    || "Merge";
+}
+
+const MERGE_STATE_NOTE = {
+  BEHIND: "This branch is behind its base. GitHub will say so if that blocks the merge.",
+  UNSTABLE: "Some non-required checks are failing.",
+  HAS_HOOKS: "This repository runs hooks on merge.",
+};
+
+async function mergeModal(pr) {
+  modal(`${esc(mergeLabel())} <span class="sub">#${pr.number} ${esc(pr.title)}</span>`,
+    "wide", async (body, close) => {
+      body.innerHTML = "Loading…";
+      const [comments, tasks] = await Promise.all([
+        api(`/api/comments?number=${pr.number}`).catch(e => ({ error: e.message, entries: [] })),
+        api(`/api/tasks?number=${pr.number}`).catch(e => ({ error: e.message, tasks: [] })),
+      ]);
+      // Only what could still block you: unresolved threads and unticked boxes.
+      const open = comments.entries.filter(e => e.kind === "thread" && !e.resolved);
+      const undone = tasks.tasks.filter(t => !t.done);
+      const note = MERGE_STATE_NOTE[pr.mergeState];
+
+      body.innerHTML = `
+        ${note ? `<p class="merge-note">${esc(note)}</p>` : ""}
+        <h4>${open.length ? `${open.length} unresolved thread${open.length === 1 ? "" : "s"}`
+          : "No unresolved threads"}</h4>
+        ${open.map(entry => `
+          <div class="thread">
+            <div class="thread-head">
+              <span class="where">${esc(entry.path)}${entry.line ? ":" + entry.line : ""}</span>
+              ${entry.outdated ? `<span class="badge muted">outdated</span>` : ""}
+            </div>
+            ${entry.comments.map((c, i) => `
+              <div class="note${i ? " reply" : ""}">
+                <div class="note-head"><b>${esc(c.author)}</b> ${when(c.at)}
+                  <a href="${esc(c.url)}" target="_blank" rel="noreferrer">↗</a></div>
+                <div class="note-body">${esc(c.body)}</div>
+              </div>`).join("")}
+          </div>`).join("")}
+        <h4>${undone.length ? `${undone.length} task${undone.length === 1 ? "" : "s"} left`
+          : tasks.tasks.length ? "All tasks done" : "No task list"}</h4>
+        ${undone.length ? `<div class="tasks">${undone.map(t =>
+          `<label class="task"><input type="checkbox" disabled><span>${esc(t.text)}</span></label>`
+        ).join("")}</div>` : ""}
+        <button class="merge cta" data-go>${esc(mergeLabel())} #${pr.number}</button>
+        <p class="hint-line">Merges on GitHub straight away. ${
+          open.length || undone.length
+            ? "There is unfinished business above."
+            : "Nothing outstanding."}</p>`;
+
+      $("[data-go]", body).onclick = async () => {
+        const go = $("[data-go]", body);
+        go.disabled = true; go.textContent = "Merging…";
+        try {
+          const res = await api("/api/merge", post({ number: pr.number }));
+          close();
+          toast(`#${pr.number} merged (${res.method.toLowerCase()})`);
+          load();
+        } catch (e) {
+          toast(`Merge #${pr.number} failed:\n${e.message}`, true);
+          go.disabled = false; go.textContent = `${mergeLabel()} #${pr.number}`;
+        }
+      };
+    });
+}
+
+async function cleanupModal() {
+  closePopover();
+  modal("🧹 Clean up closed and merged PRs", "wide", async (body, close) => {
+    let data;
+    try {
+      data = await api("/api/cleanup");
+    } catch (e) {
+      body.innerHTML = `<div class="none">${esc(e.message)}</div>`;
+      return;
+    }
+    const worktrees = data.items.filter(i => i.kind === "worktree");
+    const branches = data.items.filter(i => i.kind === "branch");
+    if (!worktrees.length && !branches.length) {
+      body.innerHTML = `<div class="none">Nothing to clean up — every worktree and
+        branch belongs to an open PR</div>`;
+      return;
+    }
+    // Merged work is recoverable, so it starts ticked; a closed-unmerged branch
+    // may hold the only copy of something, so it does not.
+    const row = item => `
+      <label class="task${item.dirty ? " blocked" : ""}">
+        <input type="checkbox" data-kind="${item.kind}" value="${esc(item.name)}"
+          ${item.state === "MERGED" && !item.dirty ? "checked" : ""}
+          ${item.dirty ? "disabled" : ""}>
+        <span>
+          <span class="badge ${item.state === "MERGED" ? "ok" : "muted"}"
+            >${item.state.toLowerCase()}</span>
+          <b>#${item.number}</b> ${esc(item.title)}
+          <span class="where">${esc(item.kind === "worktree"
+            ? shortPath(item.name, data.mainCheckout) : item.name)}</span>
+          ${item.dirty ? `<span class="badge danger">uncommitted changes — skipped</span>` : ""}
+        </span>
+      </label>`;
+    body.innerHTML = `
+      ${worktrees.length ? `<h4>Worktrees to remove</h4>
+        <div class="tasks">${worktrees.map(row).join("")}</div>` : ""}
+      ${branches.length ? `<h4>Branches to delete</h4>
+        <div class="tasks">${branches.map(row).join("")}</div>` : ""}
+      <div class="foot">
+        <button data-cancel>Cancel</button>
+        <button class="primary" data-go>Remove selected</button>
+      </div>`;
+    $("[data-cancel]", body).onclick = close;
+    $("[data-go]", body).onclick = async () => {
+      const picked = kind => [...body.querySelectorAll(`input[data-kind="${kind}"]:checked`)]
+        .map(i => i.value);
+      const payload = { worktrees: picked("worktree"), branches: picked("branch") };
+      if (!payload.worktrees.length && !payload.branches.length) return close();
+      $("[data-go]", body).disabled = true;
+      try {
+        const res = await api("/api/cleanup", post(payload));
+        const done = res.results.filter(r => r.ok);
+        const failed = res.results.filter(r => r.error);
+        close();
+        toast(`Removed ${done.length} of ${res.results.length}` +
+          (failed.length ? `\n${failed.map(f => `${f.name}: ${f.error}`).join("\n")}` : ""),
+          failed.length > 0);
+        load();
+      } catch (e) {
+        toast(`Clean up failed:\n${e.message}`, true);
+        $("[data-go]", body).disabled = false;
+      }
+    };
+  });
+}
+
 // ------------------------------ open command --------------------------------
 
 const OPEN_KEY = "pr-triage-open-command";
@@ -548,6 +880,10 @@ async function worktreePanel(anchor) {
   pop.className = "popover panel";
   pop.addEventListener("click", e => e.stopPropagation());
   pop.innerHTML = `
+    <div class="panel-head">
+      <button data-cleanup title="Remove worktrees and branches of closed PRs">🧹 Clean up</button>
+      <button class="icon-btn close" data-close title="Close (Esc)">✕</button>
+    </div>
     <div class="cmd"><span>Open in</span>
       <input type="text" data-cmd spellcheck="false" placeholder="code"
         value="${esc(localStorage.getItem(OPEN_KEY) || "")}"></div>
@@ -557,6 +893,8 @@ async function worktreePanel(anchor) {
   placePopover(pop);
   state.openPopover = pop;
 
+  $("[data-close]", pop).onclick = closePopover;
+  $("[data-cleanup]", pop).onclick = cleanupModal;
   const cmd = $("[data-cmd]", pop);
   const search = $("[data-search]", pop);
   const list = $(".list", pop);
@@ -589,13 +927,28 @@ async function worktreePanel(anchor) {
             data-path="${esc(w.path)}"${pr ? ` data-pr="${pr.number}"` : ""}>
             <span class="top">
               <span class="branch">${esc(w.branch || "detached")}</span>
-              ${number ? `<span class="num">#${number}</span>` : ""}
+              ${number ? (pr
+                ? `<a class="num" href="#${number}" data-jump="${number}"
+                     title="Jump to #${number} on the board">#${number}</a>`
+                : `<a class="num" href="https://github.com/${esc(state.repo)}/pull/${number}"
+                     target="_blank" rel="noreferrer"
+                     title="#${number} is outside the current query — open it on GitHub"
+                     >#${number}</a>`) : ""}
             </span>
             ${pr ? `<span class="prtitle">${esc(pr.title)}</span>` : ""}
             <span class="path">${esc(shortPath(w.path, data.mainCheckout))}</span>
           </button>`;
         }).join("")
       : `<div class="none">No worktree matches</div>`;
+    for (const link of list.querySelectorAll(".num[href]")) {
+      // The number is a link inside a row that opens an editor, so keep the
+      // click from doing both; the browser still follows the href itself.
+      link.onclick = e => {
+        e.stopPropagation();
+        closePopover();
+        if (link.dataset.jump) highlightPR(link.dataset.jump);
+      };
+    }
     for (const row of list.querySelectorAll(".wt")) {
       row.onclick = () => openWorktree(row.dataset.path, cmd.value.trim());
       // Point at the card this worktree belongs to while the mouse is on it,
