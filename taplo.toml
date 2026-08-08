@@ -1,0 +1,5 @@
+include = ["**/*.toml"]
+
+[formatting]
+column_width = 100
+align_comments = true

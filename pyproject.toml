@@ -1,0 +1,22 @@
+# Tool configuration only — the tools here are stdlib scripts, not a package.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+  "E4",
+  "E7",
+  "E9",
+  "F",   # pyflakes
+  "I",   # import sorting
+  "B",   # bugbear
+  "UP",  # pyupgrade
+  "SIM", # simplify
+  "RUF",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["pr-triage/tests"]
+addopts = "-q"

@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PR Triage</title>
+<style>
+  :root {
+    --bg: #f6f8fa; --panel: #ffffff; --border: #d1d9e0; --text: #1f2328;
+    --muted: #59636e; --accent: #0969da; --danger: #d1242f; --warn: #9a6700;
+    --ok: #1a7f37; --info: #0969da; --hover: #f3f4f6; --shadow: rgba(31,35,40,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3;
+      --muted: #8d96a0; --accent: #4493f8; --danger: #f85149; --warn: #d29922;
+      --ok: #3fb950; --info: #4493f8; --hover: #1c2129; --shadow: rgba(0,0,0,.3);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 12px 20px;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 15px; margin: 0; white-space: nowrap; }
+  header .repo { color: var(--muted); font-weight: 400; }
+  #query {
+    flex: 1; min-width: 200px; padding: 6px 10px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg); color: var(--text); font-size: 13px;
+  }
+  button {
+    padding: 5px 12px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel); color: var(--text); font-size: 12px; cursor: pointer;
+    white-space: nowrap;
+  }
+  button:hover { background: var(--hover); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #status { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #viewer img { width: 24px; height: 24px; border-radius: 50%; vertical-align: middle; }
+  main { max-width: 1080px; margin: 0 auto; padding: 16px 20px 60px; }
+  #error {
+    display: none; margin: 12px 0; padding: 10px 14px; border: 1px solid var(--danger);
+    border-radius: 6px; color: var(--danger); white-space: pre-wrap;
+  }
+  section h2 {
+    font-size: 14px; margin: 22px 0 8px; display: flex; align-items: baseline; gap: 8px;
+  }
+  section h2 .count {
+    font-size: 12px; color: var(--muted); font-weight: 400;
+    background: var(--hover); border-radius: 10px; padding: 1px 8px;
+  }
+  section h2 .hint { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .pr {
+    display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; margin-bottom: 8px; box-shadow: 0 1px 2px var(--shadow);
+  }
+  .pr img.avatar { width: 28px; height: 28px; border-radius: 50%; margin-top: 2px; }
+  .pr .body { flex: 1; min-width: 0; }
+  .pr .title-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .pr a.title { color: var(--text); text-decoration: none; font-weight: 600; }
+  .pr a.title:hover { color: var(--accent); }
+  .pr .num { color: var(--muted); font-weight: 400; }
+  .badge {
+    font-size: 11px; padding: 1px 7px; border-radius: 10px; border: 1px solid;
+    white-space: nowrap;
+  }
+  .badge.danger { color: var(--danger); border-color: var(--danger); }
+  .badge.warn { color: var(--warn); border-color: var(--warn); }
+  .badge.ok { color: var(--ok); border-color: var(--ok); }
+  .badge.info { color: var(--info); border-color: var(--info); }
+  .badge.muted { color: var(--muted); border-color: var(--border); }
+  .chip {
+    font-size: 11px; padding: 1px 8px; border-radius: 10px; white-space: nowrap;
+  }
+  .meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .meta .add { color: var(--ok); } .meta .del { color: var(--danger); }
+  .actions { display: flex; gap: 6px; align-items: center; position: relative; }
+  .popover {
+    position: absolute; right: 0; top: 32px; z-index: 20; width: 260px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px var(--shadow); padding: 10px;
+  }
+  .popover input[type=text] {
+    width: 100%; padding: 5px 8px; margin-bottom: 8px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg); color: var(--text); font-size: 12px;
+  }
+  .popover .list { max-height: 240px; overflow-y: auto; }
+  .popover label {
+    display: flex; gap: 6px; align-items: center; padding: 3px 2px;
+    font-size: 12px; cursor: pointer; border-radius: 4px;
+  }
+  .popover label:hover { background: var(--hover); }
+  .popover .foot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+  #toasts { position: fixed; bottom: 16px; right: 16px; z-index: 50; }
+  .toast {
+    background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--ok);
+    border-radius: 6px; padding: 10px 14px; margin-top: 8px; max-width: 420px;
+    box-shadow: 0 8px 24px var(--shadow); font-size: 13px; white-space: pre-wrap;
+  }
+  .toast.err { border-left-color: var(--danger); }
+  .empty { color: var(--muted); text-align: center; padding: 40px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PR Triage <span class="repo" id="repo"></span></h1>
+  <input id="query" spellcheck="false">
+  <button class="primary" id="refresh">Refresh</button>
+  <span id="status"></span>
+  <span id="viewer"></span>
+</header>
+<main>
+  <div id="error"></div>
+  <div id="sections"><div class="empty">Loading…</div></div>
+</main>
+<div id="toasts"></div>
+
+<script>
+const SECTIONS = [
+  ["review",      "🎯 Review now",        "others' PRs that need your eyes"],
+  ["yours_act",   "🛠️ Your PRs — act",     "feedback, failures, or new comments on your PRs"],
+  ["merge_ready", "🚀 Merge-ready",        "approved with green CI"],
+  ["waiting",     "⏳ Waiting",            "on authors or other reviewers"],
+  ["drafts",      "📝 Drafts",             "not ready for review"],
+];
+
+let state = { prs: [], labels: [], viewer: null, openPopover: null };
+const $ = (s, el) => (el || document).querySelector(s);
+
+const qInput = $("#query");
+qInput.value = localStorage.getItem("pr-triage-query") || "";
+
+function relTime(iso) {
+  const s = (Date.now() - new Date(iso)) / 1000;
+  const units = [[31536000, "y"], [2592000, "mo"], [604800, "w"], [86400, "d"], [3600, "h"], [60, "m"]];
+  for (const [sec, label] of units) if (s >= sec) return Math.floor(s / sec) + label + " ago";
+  return "just now";
+}
+
+function labelStyle(hex) {
+  const r = parseInt(hex.slice(0, 2), 16), g = parseInt(hex.slice(2, 4), 16), b = parseInt(hex.slice(4, 6), 16);
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return `background:#${hex};color:${lum > 0.55 ? "#000" : "#fff"}`;
+}
+
+function esc(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function toast(msg, isErr) {
+  const el = document.createElement("div");
+  el.className = "toast" + (isErr ? " err" : "");
+  el.textContent = msg;
+  $("#toasts").appendChild(el);
+  setTimeout(() => el.remove(), isErr ? 12000 : 5000);
+}
+
+function closePopover() {
+  if (state.openPopover) { state.openPopover.remove(); state.openPopover = null; }
+}
+document.addEventListener("click", e => {
+  if (state.openPopover && !state.openPopover.contains(e.target)) closePopover();
+});
+
+async function load() {
+  $("#status").textContent = "loading…";
+  $("#refresh").disabled = true;
+  try {
+    const q = qInput.value.trim();
+    const data = await api("/api/prs" + (q ? "?q=" + encodeURIComponent(q) : ""));
+    state.prs = data.prs;
+    state.viewer = data.viewer;
+    if (!qInput.value) qInput.value = data.query;
+    $("#repo").textContent = data.repo;
+    $("#viewer").innerHTML = `<img src="${esc(data.viewer.avatarUrl)}" title="${esc(data.viewer.login)}">`;
+    $("#error").style.display = "none";
+    render();
+    $("#status").textContent = `${data.prs.length} PRs · updated ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    $("#error").textContent = String(e.message || e);
+    $("#error").style.display = "block";
+    $("#status").textContent = "error";
+  } finally {
+    $("#refresh").disabled = false;
+  }
+}
+
+function render() {
+  const root = $("#sections");
+  root.innerHTML = "";
+  let shown = 0;
+  for (const [key, title, hint] of SECTIONS) {
+    const prs = state.prs.filter(p => p.bucket === key)
+      .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+    if (!prs.length) continue;
+    shown += prs.length;
+    const sec = document.createElement("section");
+    sec.innerHTML = `<h2>${title} <span class="count">${prs.length}</span> <span class="hint">${hint}</span></h2>`;
+    for (const pr of prs) sec.appendChild(renderPR(pr));
+    root.appendChild(sec);
+  }
+  if (!shown) root.innerHTML = `<div class="empty">No PRs match this query 🎉</div>`;
+}
+
+function renderPR(pr) {
+  const el = document.createElement("div");
+  el.className = "pr";
+  const badges = pr.badges.map(b => `<span class="badge ${b.kind}">${esc(b.text)}</span>`).join("");
+  const labels = pr.labels.map(l =>
+    `<span class="chip" style="${labelStyle(l.color)}">${esc(l.name)}</span>`).join("");
+  const tasks = pr.tasksTotal ? ` · ☑ ${pr.tasksDone}/${pr.tasksTotal}` : "";
+  const assignees = pr.assignees.length ? ` · 👤 ${pr.assignees.join(", ")}` : "";
+  el.innerHTML = `
+    <img class="avatar" src="${esc(pr.avatarUrl)}" title="${esc(pr.author)}">
+    <div class="body">
+      <div class="title-row">
+        <a class="title" href="${esc(pr.url)}" target="_blank">${esc(pr.title)}
+          <span class="num">#${pr.number}</span></a>
+        ${badges}${labels}
+      </div>
+      <div class="meta">
+        by ${esc(pr.author)} · opened ${relTime(pr.createdAt)} · updated ${relTime(pr.updatedAt)}
+        · <span class="add">+${pr.additions}</span> <span class="del">−${pr.deletions}</span>
+        · 💬 ${pr.commentCount}${tasks}${assignees}
+      </div>
+    </div>
+    <div class="actions">
+      <button data-act="checkout">⎇ Checkout</button>
+      <button data-act="labels">🏷 Labels</button>
+      <button data-act="assign">👤 Assign</button>
+    </div>`;
+  const actions = $(".actions", el);
+  $('[data-act="checkout"]', el).onclick = () => checkout(pr, el);
+  $('[data-act="labels"]', el).onclick = e => { e.stopPropagation(); labelPopover(pr, actions); };
+  $('[data-act="assign"]', el).onclick = e => { e.stopPropagation(); assignPopover(pr, actions); };
+  return el;
+}
+
+async function checkout(pr, el) {
+  const btn = $('[data-act="checkout"]', el);
+  btn.disabled = true; btn.textContent = "⎇ …";
+  try {
+    const res = await api("/api/checkout", post({ number: pr.number }));
+    toast(`Checked out ${res.branch}\nin ${res.path}`);
+  } catch (e) {
+    toast(`Checkout #${pr.number} failed:\n${e.message}`, true);
+  } finally {
+    btn.disabled = false; btn.textContent = "⎇ Checkout";
+  }
+}
+
+function post(body) {
+  return { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+}
+
+async function ensureLabels() {
+  if (!state.labels.length) state.labels = await api("/api/labels");
+  return state.labels;
+}
+
+async function labelPopover(pr, anchor) {
+  closePopover();
+  const pop = document.createElement("div");
+  pop.className = "popover";
+  pop.addEventListener("click", e => e.stopPropagation());
+  pop.innerHTML = `<input type="text" placeholder="Filter labels…"><div class="list">Loading…</div>
+    <div class="foot"><button data-cancel>Cancel</button><button class="primary" data-apply>Apply</button></div>`;
+  anchor.appendChild(pop);
+  state.openPopover = pop;
+
+  const current = new Set(pr.labels.map(l => l.name));
+  const labels = await ensureLabels();
+  const list = $(".list", pop);
+  const draw = filter => {
+    list.innerHTML = "";
+    for (const l of labels) {
+      if (filter && !l.name.toLowerCase().includes(filter)) continue;
+      const row = document.createElement("label");
+      row.innerHTML = `<input type="checkbox" value="${esc(l.name)}" ${current.has(l.name) ? "checked" : ""}>
+        <span class="chip" style="${labelStyle(l.color)}">${esc(l.name)}</span>`;
+      list.appendChild(row);
+    }
+  };
+  draw("");
+  $("input[type=text]", pop).oninput = e => draw(e.target.value.toLowerCase());
+  $("[data-cancel]", pop).onclick = closePopover;
+  $("[data-apply]", pop).onclick = async () => {
+    const checked = new Set([...pop.querySelectorAll(".list input:checked")].map(i => i.value));
+    const add = [...checked].filter(n => !current.has(n));
+    const remove = [...current].filter(n => !checked.has(n));
+    closePopover();
+    if (!add.length && !remove.length) return;
+    try {
+      await api("/api/labels", post({ number: pr.number, add, remove }));
+      toast(`#${pr.number}: labels updated` +
+        (add.length ? `\n+ ${add.join(", ")}` : "") + (remove.length ? `\n− ${remove.join(", ")}` : ""));
+      load();
+    } catch (e) { toast(`Relabel #${pr.number} failed:\n${e.message}`, true); }
+  };
+}
+
+function assignPopover(pr, anchor) {
+  closePopover();
+  const pop = document.createElement("div");
+  pop.className = "popover";
+  pop.addEventListener("click", e => e.stopPropagation());
+  const current = pr.assignees.map(a =>
+    `<label><input type="checkbox" checked value="${esc(a)}"> ${esc(a)} <span style="color:var(--muted)">(uncheck to remove)</span></label>`).join("");
+  pop.innerHTML = `
+    <button data-me style="width:100%;margin-bottom:8px">Assign me (${esc(state.viewer.login)})</button>
+    <input type="text" placeholder="Add login…">
+    <div class="list">${current}</div>
+    <div class="foot"><button data-cancel>Cancel</button><button class="primary" data-apply>Apply</button></div>`;
+  anchor.appendChild(pop);
+  state.openPopover = pop;
+
+  $("[data-me]", pop).onclick = async () => {
+    closePopover();
+    try {
+      await api("/api/assignees", post({ number: pr.number, add: [state.viewer.login] }));
+      toast(`#${pr.number}: assigned to you`); load();
+    } catch (e) { toast(`Assign failed:\n${e.message}`, true); }
+  };
+  $("[data-cancel]", pop).onclick = closePopover;
+  $("[data-apply]", pop).onclick = async () => {
+    const typed = $("input[type=text]", pop).value.trim();
+    const keep = new Set([...pop.querySelectorAll(".list input:checked")].map(i => i.value));
+    const add = typed ? [typed] : [];
+    const remove = pr.assignees.filter(a => !keep.has(a));
+    closePopover();
+    if (!add.length && !remove.length) return;
+    try {
+      await api("/api/assignees", post({ number: pr.number, add, remove }));
+      toast(`#${pr.number}: assignees updated`); load();
+    } catch (e) { toast(`Assign #${pr.number} failed:\n${e.message}`, true); }
+  };
+}
+
+$("#refresh").onclick = load;
+qInput.addEventListener("keydown", e => {
+  if (e.key === "Enter") { localStorage.setItem("pr-triage-query", qInput.value); load(); }
+});
+setInterval(() => { if (document.visibilityState === "visible") load(); }, 120000);
+load();
+</script>
+</body>
+</html>
