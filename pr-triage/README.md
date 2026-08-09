@@ -101,14 +101,20 @@ Python 3.11+ and an authenticated `gh` CLI. No other dependencies.
 
 ## Run
 
-From inside a checkout of the repo you want to triage:
+From this repository, naming the checkout you want to triage:
 
 ```bash
-python3 pr-triage/pr_triage.py
+just run ~/Code/some-repo
 ```
 
-(Use the full path to `pr_triage.py` if your cwd is the target repo — the
-tool triages whichever repo you run it *from*, not the one it lives in.)
+`just run` on its own triages this repository. Either way it is a wrapper
+around running the script from inside the target checkout, which you can do
+directly — the tool triages whichever repo it runs *from*, not the one it
+lives in:
+
+```bash
+cd ~/Code/some-repo && python3 ~/Code/github-streamlined/pr-triage/pr_triage.py
+```
 
 Then open <http://127.0.0.1:8642>. The search box accepts GitHub search
 syntax, e.g. `is:open label:"my-team"`; press Enter to apply, and the query

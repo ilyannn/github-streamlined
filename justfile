@@ -17,6 +17,17 @@ pytest_version := "9.0.2"
 _default:
     @just --list --unsorted --list-prefix "  "
 
+# ------------------------------ Running -------------------------------------
+
+# Serve the PR triage dashboard for a checkout (default: this repo)
+run dir=".":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The tool triages whichever repo it is *run from*, so cd first: the point
+    # of the argument is `just run ~/Code/some-other-repo`.
+    cd "{{ dir }}"
+    exec python3 "{{ justfile_directory() }}/pr-triage/pr_triage.py"
+
 # ------------------------------ Setup ---------------------------------------
 
 # Check installation prerequisites

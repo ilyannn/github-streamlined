@@ -27,10 +27,11 @@ mise install
 Then:
 
 ```bash
-just          # list recipes
-just tests    # run the test suite
-just lint     # ruff + taplo
-just check    # everything CI enforces
+just                    # list recipes
+just run ~/Code/a-repo  # serve the PR triage dashboard for a checkout
+just tests              # run the test suite
+just lint               # ruff + taplo
+just check              # everything CI enforces
 ```
 
 ## License
