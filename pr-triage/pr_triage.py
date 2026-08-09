@@ -466,7 +466,7 @@ def find_worktree(trees, number, branch):
 
 def open_path(command, path):
     """Run `<command> <path>` — the user's editor, file manager, or terminal."""
-    argv = shlex.split(command)
+    argv = shlex.split(command or "")
     if not argv:
         raise RuntimeError("No open command configured")
     exe = shutil.which(argv[0])

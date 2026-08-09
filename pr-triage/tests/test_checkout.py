@@ -224,3 +224,9 @@ class TestOpenPath:
         monkeypatch.setattr(pr_triage, "spawn", lambda argv: pytest.fail("spawned"))
         with pytest.raises(RuntimeError, match="No open command"):
             pr_triage.open_path("   ", "/tmp/wt")
+
+    def test_rejects_a_missing_command(self, monkeypatch):
+        # A request without one must say so, not fail inside shlex.
+        monkeypatch.setattr(pr_triage, "spawn", lambda argv: pytest.fail("spawned"))
+        with pytest.raises(RuntimeError, match="No open command"):
+            pr_triage.open_path(None, "/tmp/wt")
