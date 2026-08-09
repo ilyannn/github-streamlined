@@ -281,13 +281,17 @@ def classify(pr, me):
         if landable:
             bucket = "merge_ready"
         elif (
-            decision == "CHANGES_REQUESTED"
+            # Approved but not landable yet — CI still running, say. Reviewers
+            # are done, so the next move is yours; it is not waiting on anyone.
+            decision == "APPROVED"
+            or decision == "CHANGES_REQUESTED"
             or ci in ("FAILURE", "ERROR")
             or conflicting
             or others_new
         ):
             bucket = "yours_act"
         else:
+            # Nobody has reviewed it yet: genuinely waiting on other people.
             bucket = "waiting"
     else:
         needs_me = (

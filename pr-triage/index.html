@@ -83,10 +83,9 @@
   /* One pill for every count on the page: section totals and the worktree
      button read the same. */
   .count {
-    font-size: 12px; color: var(--muted); font-weight: 400;
-    background: var(--hover); border-radius: 10px; padding: 1px 8px;
+    font-size: 12px; color: var(--text); font-weight: 600;
+    background: var(--border); border-radius: 10px; padding: 1px 8px;
   }
-  #worktrees .count { background: var(--bg); }
   section h2 .hint { font-size: 12px; color: var(--muted); font-weight: 400; }
   .rows.collapsed { display: none; }
   .pr {
@@ -333,7 +332,7 @@ import { prNumberFromPath, shortPath } from "./paths.mjs";
 import { hasTerms, term, toggleTerms } from "./query.mjs";
 
 const SECTIONS = [
-  ["yours_act",   "🛠️ Your PRs — act",     "feedback, failures, conflicts, or new comments on your PRs"],
+  ["yours_act",   "🛠️ Your PRs — act",     "yours where the next move is yours: feedback, failures, conflicts, or just CI left"],
   ["review",      "🎯 Review now",        "others' PRs that need your eyes"],
   ["merge_ready", "🚀 Merge-ready",        "approved with green CI"],
   ["waiting",     "⏳ Waiting",            "on authors or other reviewers"],

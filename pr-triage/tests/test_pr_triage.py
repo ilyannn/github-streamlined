@@ -92,7 +92,21 @@ class TestClassify:
         assert "1 new comment" in badge_texts(badges)
 
     def test_mine_quiet_is_waiting(self):
+        # Nobody has reviewed it yet, so it really is waiting on other people.
         bucket, _ = classify(make_pr(author=ME), ME)
+        assert bucket == "waiting"
+
+    def test_mine_approved_with_ci_running_is_yours_to_act_on(self):
+        # Reviewers are finished; the only thing left is CI and then merging,
+        # which is your move, not theirs.
+        pr = make_pr(author=ME, decision="APPROVED", ci="PENDING")
+        bucket, badges = classify(pr, ME)
+        assert bucket == "yours_act"
+        assert "CI running" in badge_texts(badges)
+
+    def test_someone_elses_approved_pr_with_ci_running_is_not_mine_to_act_on(self):
+        pr = make_pr(decision="APPROVED", ci="PENDING", reviews=[(ME, "APPROVED", t(2))])
+        bucket, _ = classify(pr, ME)
         assert bucket == "waiting"
 
     def test_mine_merge_ready_beats_new_comments(self):
