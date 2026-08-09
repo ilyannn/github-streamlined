@@ -63,6 +63,7 @@ query($q: String!) {
       ... on PullRequest {
         number title url body isDraft reviewDecision createdAt updatedAt
         headRefName additions deletions mergeable mergeStateStatus
+        autoMergeRequest { enabledAt mergeMethod enabledBy { login } }
         author { login avatarUrl }
         labels(first: 20) { nodes { name color } }
         assignees(first: 10) { nodes { login } }
@@ -191,6 +192,18 @@ def set_task(number, index, done):
     finally:
         os.unlink(path)
     return {"number": number, "tasks": parse_tasks(updated)}
+
+
+def auto_merge(pr):
+    """Auto-merge, if it is armed: GitHub merges this one once it is allowed to."""
+    request = pr.get("autoMergeRequest")
+    if not request:
+        return None
+    return {
+        "method": (request.get("mergeMethod") or "").lower(),
+        "at": request.get("enabledAt"),
+        "by": (request.get("enabledBy") or {}).get("login"),
+    }
 
 
 def classify(pr, me):
@@ -363,6 +376,7 @@ def fetch_prs(user_query):
                     and not pr["isDraft"]
                 ),
                 "mergeState": pr.get("mergeStateStatus"),
+                "autoMerge": auto_merge(pr),
                 "tasksDone": done,
                 "tasksTotal": total,
                 "bucket": bucket,

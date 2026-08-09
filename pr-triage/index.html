@@ -33,8 +33,9 @@
     display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
     margin: 0 0 10px; color: var(--muted); font-size: 12px;
   }
-  .summary a.repo { color: var(--muted); text-decoration: none; font-size: 13px; }
-  .summary a.repo:hover { color: var(--accent); text-decoration: underline; }
+  .summary a { color: var(--muted); text-decoration: none; }
+  .summary a.repo { font-size: 13px; }
+  .summary a:hover { color: var(--accent); text-decoration: underline; }
   @media (max-width: 640px) {
     header { gap: 8px; padding: 10px 14px; }
     #worktrees .label { display: none; }
@@ -79,10 +80,13 @@
     color: var(--muted); font-size: 21px; width: 20px; display: inline-block;
     line-height: 1;
   }
-  section h2 .count {
+  /* One pill for every count on the page: section totals and the worktree
+     button read the same. */
+  .count {
     font-size: 12px; color: var(--muted); font-weight: 400;
     background: var(--hover); border-radius: 10px; padding: 1px 8px;
   }
+  #worktrees .count { background: var(--bg); }
   section h2 .hint { font-size: 12px; color: var(--muted); font-weight: 400; }
   .rows.collapsed { display: none; }
   .pr {
@@ -236,6 +240,14 @@
     background: #1f883d; border-color: #1f883d; color: #fff; font-weight: 600;
   }
   button.merge:hover { background: #1a7f37; }
+  /* Armed, not actionable: outlined rather than solid, so it reads as state
+     next to the button rather than a second thing to press. */
+  .automerge {
+    display: block; text-align: center; padding: 5px 12px; border-radius: 6px;
+    border: 1px solid var(--ok); color: var(--ok); font-size: 12px;
+    text-decoration: none; white-space: nowrap;
+  }
+  .automerge:hover { background: var(--hover); }
   button.cta { width: 100%; padding: 10px; font-size: 14px; margin-top: 4px; }
   .merge-note { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
   .merge-row { display: flex; gap: 8px; align-items: stretch; margin-top: 12px; }
@@ -321,8 +333,8 @@ import { prNumberFromPath, shortPath } from "./paths.mjs";
 import { hasTerms, term, toggleTerms } from "./query.mjs";
 
 const SECTIONS = [
+  ["yours_act",   "🛠️ Your PRs — act",     "feedback, failures, conflicts, or new comments on your PRs"],
   ["review",      "🎯 Review now",        "others' PRs that need your eyes"],
-  ["yours_act",   "🛠️ Your PRs — act",     "feedback, failures, or new comments on your PRs"],
   ["merge_ready", "🚀 Merge-ready",        "approved with green CI"],
   ["waiting",     "⏳ Waiting",            "on authors or other reviewers"],
   ["drafts",      "📝 Drafts",             "not ready for review"],
@@ -433,8 +445,8 @@ async function load() {
     if (!qInput.value) qInput.value = data.query;
     const repo = $("#repo");
     repo.textContent = data.repo;
-    repo.href = `https://github.com/${data.repo}/pulls`;
-    repo.title = `Open ${data.repo} pull requests on GitHub`;
+    repo.href = `https://github.com/${data.repo}`;
+    repo.title = `Open ${data.repo} on GitHub`;
     const home = $("#home");
     home.href = `https://github.com/${data.repo}`;
     home.title = `Open ${data.repo} on GitHub`;
@@ -446,7 +458,9 @@ async function load() {
       `🌳 <span class="label">Worktrees</span> <span class="count">${data.worktreeCount}</span>`;
     render();
     const when = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    $("#status").textContent = `${data.prs.length} PRs · updated ${when}`;
+    $("#status").innerHTML =
+      `<a href="https://github.com/${esc(data.repo)}/pulls" target="_blank" rel="noreferrer"
+        title="Open the pull request list on GitHub">${data.prs.length} PRs</a> · updated ${when}`;
     document.title = `PR Triage | ${data.repo} | ${when}`;
   } catch (e) {
     $("#error").textContent = String(e.message || e);
@@ -566,6 +580,12 @@ function renderPR(pr) {
         ? `Open ${pr.worktree}`
         : `Create a worktree for #${pr.number} and open it`)}">${
         pr.worktree ? "📂 Open worktree" : "⎇ Add worktree"}</button>
+      ${pr.autoMerge ? `<a class="automerge" href="${esc(pr.url)}" target="_blank"
+        rel="noreferrer" title="${esc(`Auto-merge (${pr.autoMerge.method}) armed${
+          pr.autoMerge.by ? ` by ${pr.autoMerge.by}` : ""}${
+          pr.autoMerge.at ? ` ${relTime(pr.autoMerge.at)}` : ""
+        } — GitHub merges this once its requirements are met`)}"
+        >⏳ Auto-merge${pr.autoMerge.method ? ` (${esc(pr.autoMerge.method)})` : ""}</a>` : ""}
       ${pr.canMerge ? `<button class="merge" data-act="merge"
         title="Review and ${esc(mergeLabel().toLowerCase())} #${pr.number}"
         >${esc(mergeLabel())}</button>` : ""}

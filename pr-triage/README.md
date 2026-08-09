@@ -9,8 +9,8 @@ Open PRs are grouped into action buckets:
 | Bucket | Meaning |
 | --- | --- |
 | 🎯 Review now | Others' PRs where your review is requested, you've never looked, code was pushed since your review, or new comments arrived since your last activity |
-| 🛠️ Your PRs — act | Your PRs with changes requested, failing CI, or new comments |
-| 🚀 Merge-ready | Approved with green CI |
+| 🛠️ Your PRs — act | Your PRs with changes requested, failing CI, conflicts, or new comments |
+| 🚀 Merge-ready | Approved, green CI, no conflicts |
 | ⏳ Waiting | On the author or other reviewers — nothing for you to do |
 | 📝 Drafts | Not ready for review |
 
@@ -55,6 +55,10 @@ there edits the pull request body on GitHub; the commit count and the
 **+/−** counts link to the commits and the diff.
 
 ## Merging
+
+A PR with **auto-merge** already armed says so where the button would be —
+outlined rather than solid, because it is state and not something to press.
+If a PR somehow has both, both appear.
 
 A PR that GitHub considers mergeable gets a green button under the worktree
 one, labelled with the method the repository actually allows — **Squash and

@@ -230,6 +230,28 @@ class TestDoEdit:
         ]
 
 
+class TestAutoMerge:
+    def test_absent_when_not_armed(self):
+        assert pr_triage.auto_merge(make_pr()) is None
+        assert pr_triage.auto_merge(make_pr() | {"autoMergeRequest": None}) is None
+
+    def test_reports_who_armed_it_and_how(self):
+        pr = make_pr() | {
+            "autoMergeRequest": {
+                "enabledAt": t(3),
+                "mergeMethod": "SQUASH",
+                "enabledBy": {"login": "octocat"},
+            }
+        }
+        assert pr_triage.auto_merge(pr) == {"method": "squash", "at": t(3), "by": "octocat"}
+
+    def test_copes_with_a_deleted_enabler(self):
+        pr = make_pr() | {
+            "autoMergeRequest": {"enabledAt": t(3), "mergeMethod": "MERGE", "enabledBy": None}
+        }
+        assert pr_triage.auto_merge(pr) == {"method": "merge", "at": t(3), "by": None}
+
+
 class TestMergeabilityRetry:
     """GitHub answers UNKNOWN the first time and computes in the background."""
 
