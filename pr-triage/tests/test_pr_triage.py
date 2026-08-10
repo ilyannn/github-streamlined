@@ -188,6 +188,24 @@ class TestClassify:
         assert bucket == "yours_act"
         assert "conflicts" in badge_texts(badges)
 
+    def test_behind_base_is_badged(self):
+        # Explains the missing merge button, and says what to do about it.
+        pr = make_pr(decision="APPROVED", ci="SUCCESS") | {
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "BEHIND",
+        }
+        _, badges = classify(pr, ME)
+        assert "behind base" in badge_texts(badges)
+
+    def test_conflicts_outrank_behind_in_the_badges(self):
+        pr = make_pr(decision="APPROVED", ci="SUCCESS") | {
+            "mergeable": "CONFLICTING",
+            "mergeStateStatus": "BEHIND",
+        }
+        _, badges = classify(pr, ME)
+        assert "conflicts" in badge_texts(badges)
+        assert "behind base" not in badge_texts(badges)
+
     def test_someone_elses_conflicted_pr_waits_on_them(self):
         pr = make_pr(decision="APPROVED", ci="SUCCESS", reviews=[(ME, "APPROVED", t(2))]) | {
             "mergeable": "CONFLICTING"
@@ -411,7 +429,9 @@ class TestFetchPrs:
             return pr_triage.fetch_prs("is:open")["prs"][0]["canMerge"]
 
         assert run("MERGEABLE", "CLEAN") is True
-        assert run("MERGEABLE", "BEHIND") is True
+        # GitHub reports BEHIND only when being out of date blocks the merge,
+        # so a button there would be one the API refuses.
+        assert run("MERGEABLE", "BEHIND") is False
         assert run("MERGEABLE", "BLOCKED") is False  # a required check or review is missing
         assert run("CONFLICTING", "DIRTY") is False
         assert run("UNKNOWN", "UNKNOWN") is False  # GitHub has not worked it out yet

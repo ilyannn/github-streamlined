@@ -47,9 +47,13 @@
   header a.home:hover, header a.repo:hover { color: var(--accent); text-decoration: underline; }
   .search { flex: 1 1 260px; display: flex; align-items: center; gap: 6px; position: relative; }
   #query {
-    flex: 1; min-width: 200px; padding: 6px 28px 6px 10px; border: 1px solid var(--border);
+    /* Room on the right for the match count and the reset button, both of
+       which sit inside the box. */
+    flex: 1; min-width: 200px; padding: 6px 78px 6px 10px; border: 1px solid var(--border);
     border-radius: 6px; background: var(--bg); color: var(--text); font-size: 13px;
   }
+  #prcount { position: absolute; right: 30px; text-decoration: none; }
+  #prcount:hover { color: var(--accent); }
   #query:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   #clear {
     position: absolute; right: 6px; border: none; background: none; color: var(--muted);
@@ -307,6 +311,7 @@
   <h1><a class="home" id="home" target="_blank" rel="noreferrer">PR Triage</a></h1>
   <div class="search">
     <input id="query" spellcheck="false" placeholder="GitHub search syntax — / to focus, Enter to apply">
+    <a id="prcount" class="count" target="_blank" rel="noreferrer"></a>
     <button id="clear" title="Reset to the default query">✕</button>
   </div>
   <span class="anchor"><button id="worktrees"
@@ -457,9 +462,11 @@ async function load() {
       `🌳 <span class="label">Worktrees</span> <span class="count">${data.worktreeCount}</span>`;
     render();
     const when = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    $("#status").innerHTML =
-      `<a href="https://github.com/${esc(data.repo)}/pulls" target="_blank" rel="noreferrer"
-        title="Open the pull request list on GitHub">${data.prs.length} PRs</a> · updated ${when}`;
+    const count = $("#prcount");
+    count.textContent = data.prs.length;
+    count.href = `https://github.com/${data.repo}/pulls`;
+    count.title = `${data.prs.length} PRs match this filter — open the list on GitHub`;
+    $("#status").textContent = `updated ${when}`;
     document.title = `PR Triage | ${data.repo} | ${when}`;
   } catch (e) {
     $("#error").textContent = String(e.message || e);
@@ -584,7 +591,8 @@ function renderPR(pr) {
           pr.autoMerge.by ? ` by ${pr.autoMerge.by}` : ""}${
           pr.autoMerge.at ? ` ${relTime(pr.autoMerge.at)}` : ""
         } — GitHub merges this once its requirements are met`)}"
-        >⏳ Auto-merge${pr.autoMerge.method ? ` (${esc(pr.autoMerge.method)})` : ""}</a>` : ""}
+        >⏳ Set to auto-merge${
+          pr.autoMerge.method ? ` (${esc(pr.autoMerge.method)})` : ""}</a>` : ""}
       ${pr.canMerge ? `<button class="merge" data-act="merge"
         title="Review and ${esc(mergeLabel().toLowerCase())} #${pr.number}"
         >${esc(mergeLabel())}</button>` : ""}
@@ -794,8 +802,7 @@ function mergeLabel() {
 }
 
 const MERGE_STATE_NOTE = {
-  BEHIND: "This branch is behind its base. GitHub will say so if that blocks the merge.",
-  UNSTABLE: "Some non-required checks are failing.",
+  UNSTABLE: "Some checks are failing, but none that this repository requires.",
   HAS_HOOKS: "This repository runs hooks on merge.",
 };
 

@@ -252,6 +252,10 @@ def classify(pr, me):
     if pr.get("mergeable") == "CONFLICTING":
         # Otherwise an approved, green PR with no merge button looks broken.
         badges.append({"text": "conflicts", "kind": "danger"})
+    elif pr.get("mergeStateStatus") == "BEHIND":
+        # Same reasoning: this is why there is no merge button, and it says
+        # what to do about it.
+        badges.append({"text": "behind base", "kind": "warn"})
     if decision == "CHANGES_REQUESTED":
         badges.append({"text": "changes requested", "kind": "danger"})
     elif decision == "APPROVED":
@@ -515,7 +519,11 @@ def do_checkout(number, open_command=None):
 
 # Merge states where GitHub would still offer the button. DIRTY means conflicts,
 # BLOCKED means a required review or check is missing, DRAFT speaks for itself.
-MERGEABLE_STATES = ("CLEAN", "UNSTABLE", "BEHIND", "HAS_HOOKS")
+# BEHIND is deliberately absent. GitHub only reports it when being out of date
+# actually blocks the merge (a ruleset requiring branches to be up to date), so
+# offering a merge there sends you to a button the API refuses. DIRTY means
+# conflicts, BLOCKED a missing review or required check, DRAFT speaks for itself.
+MERGEABLE_STATES = ("CLEAN", "UNSTABLE", "HAS_HOOKS")
 MERGE_FLAGS = {"SQUASH": "--squash", "MERGE": "--merge", "REBASE": "--rebase"}
 _merge_method = None
 
