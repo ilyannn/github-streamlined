@@ -41,6 +41,69 @@ class TestSourceStamps:
         assert pr_triage.changed_files(stamps) == []
 
 
+class TestUnparsable:
+    """The guard that keeps a half-written save from killing the server."""
+
+    def test_healthy_source_is_fine(self, sources):
+        assert pr_triage.unparsable([sources / "pr_triage.py"]) == []
+
+    def test_catches_a_syntax_error(self, sources):
+        broken = sources / "pr_triage.py"
+        broken.write_text("def half_written(:\n")
+        assert pr_triage.unparsable([broken]) == [broken]
+
+    def test_catches_a_truncated_file(self, sources):
+        broken = sources / "pr_triage.py"
+        broken.write_text("def f():\n    return {'a': 1,\n")
+        assert pr_triage.unparsable([broken]) == [broken]
+
+    def test_treats_a_vanished_file_as_broken(self, sources):
+        gone = sources / "pr_triage.py"
+        gone.unlink()
+        # Restarting into a missing entry point would end the process.
+        assert pr_triage.unparsable([gone]) == [gone]
+
+    def test_reports_every_broken_file(self, sources):
+        one, two = sources / "pr_triage.py", sources / "other.py"
+        one.write_text("oops(")
+        two.write_text("also bad(")
+        assert set(pr_triage.unparsable([one, two])) == {one, two}
+
+
+class TestWhyNotRestart:
+    """Parse errors are the common case; import-time failures are the fatal one."""
+
+    def test_silent_when_the_new_code_would_run(self, monkeypatch, sources):
+        monkeypatch.setattr(pr_triage, "sh", lambda *a, **k: (0, "", ""))
+        assert pr_triage.why_not_restart([sources / "pr_triage.py"]) is None
+
+    def test_reports_a_parse_error_without_spawning_anything(self, monkeypatch, sources):
+        broken = sources / "pr_triage.py"
+        broken.write_text("nope(")
+        monkeypatch.setattr(pr_triage, "sh", lambda *a, **k: pytest.fail("should not import"))
+        assert "will not parse" in pr_triage.why_not_restart([broken])
+
+    def test_reports_an_import_failure(self, monkeypatch, sources):
+        # Parses fine, dies on exec — the case that would have lost the server.
+        (sources / "pr_triage.py").write_text("undefined_name()\n")
+        monkeypatch.setattr(
+            pr_triage,
+            "sh",
+            lambda *a, **k: (
+                1,
+                "",
+                "Traceback...\nNameError: name 'undefined_name' is not defined",
+            ),
+        )
+        why = pr_triage.why_not_restart([sources / "pr_triage.py"])
+        assert "fails on import" in why
+        assert "NameError" in why
+
+    def test_copes_with_an_empty_stderr(self, monkeypatch, sources):
+        monkeypatch.setattr(pr_triage, "sh", lambda *a, **k: (1, "", ""))
+        assert "unknown error" in pr_triage.why_not_restart([sources / "pr_triage.py"])
+
+
 class TestAssetVersion:
     def test_changes_when_the_html_changes(self, sources):
         before = pr_triage.asset_version()

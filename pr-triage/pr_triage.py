@@ -1173,7 +1173,43 @@ def changed_files(stamps):
     return changed
 
 
-def watch_sources(interval=1.0):
+def unparsable(paths):
+    """The watched files Python cannot even read, if any.
+
+    Restarting into a half-written file would replace this process with one
+    that dies on a traceback — losing the server outright, which is worse than
+    running code a minute old. Better to keep serving and wait for the next
+    save.
+    """
+    broken = []
+    for path in paths:
+        try:
+            compile(path.read_text(), str(path), "exec")
+        except (SyntaxError, ValueError):
+            broken.append(path)
+        except OSError:
+            broken.append(path)  # vanished or unreadable mid-write
+    return broken
+
+
+def why_not_restart(paths):
+    """A reason to keep the current process, or None if the new code will run.
+
+    Parsing is checked first because it is instant, then the module is actually
+    imported in a subprocess: a name used at import time parses perfectly and
+    still ends the process on exec.
+    """
+    broken = unparsable(paths)
+    if broken:
+        return f"{', '.join(path.name for path in broken)} will not parse"
+    rc, _, err = sh([sys.executable, "-c", f"import {Path(__file__).stem}"], cwd=HERE)
+    if rc != 0:
+        last = [line for line in err.strip().splitlines() if line.strip()]
+        return f"it fails on import ({last[-1] if last else 'unknown error'})"
+    return None
+
+
+def watch_sources(interval=1.0, settle=0.6):
     """Restart this process when its own source changes.
 
     A dashboard left open for days otherwise keeps serving the code it started
@@ -1182,13 +1218,29 @@ def watch_sources(interval=1.0):
     stamps = source_stamps()
 
     def loop():
+        nonlocal stamps
         while True:
             time.sleep(interval)
             changed = changed_files(stamps)
-            if changed:
-                names = ", ".join(path.name for path in changed)
-                print(f"↻ {names} changed — restarting", flush=True)
-                os.execv(sys.executable, [sys.executable, *sys.argv])
+            if not changed:
+                continue
+            # Wait for a burst of saves to finish, so a series of edits across
+            # several files restarts once rather than once each.
+            while True:
+                time.sleep(settle)
+                settling = changed_files(stamps)
+                if len(settling) == len(changed):
+                    break
+                changed = settling
+
+            names = ", ".join(path.name for path in changed)
+            why = why_not_restart(stamps)
+            if why:
+                print(f"↻ {names} changed, but {why} — still serving the old code", flush=True)
+                stamps = source_stamps()  # wait for the next save rather than spinning
+                continue
+            print(f"↻ {names} changed — restarting", flush=True)
+            os.execv(sys.executable, [sys.executable, *sys.argv])
 
     threading.Thread(target=loop, daemon=True).start()
 

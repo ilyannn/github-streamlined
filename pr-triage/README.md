@@ -136,6 +136,13 @@ in place; editing the HTML or a module changes a fingerprint the page notices on
 its next refresh, and it reloads itself. So a dashboard open for days is never
 quietly running week-old code. Set `PR_TRIAGE_RELOAD=0` to hold it still.
 
+It will not restart into code that cannot run. A burst of saves settles first,
+so a series of edits restarts once; then the new source has to parse *and*
+survive being imported in a subprocess. If it fails either, the old process
+keeps serving and says why, and waits for the next save. Losing the server to a
+half-written file would be worse than running code a minute old — which
+matters if someone else is editing while you have it open.
+
 ## Configuration
 
 | Env var | Default | |
