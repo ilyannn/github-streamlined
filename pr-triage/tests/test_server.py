@@ -145,6 +145,15 @@ def test_open_without_a_path_is_400(base_url):
     assert req(base_url + "/api/open", method="POST", body={})[0] == 400
 
 
+def test_ready_routes_to_do_ready(base_url, monkeypatch):
+    calls = []
+    monkeypatch.setattr(pr_triage, "do_ready", lambda n: (calls.append(n), {"number": n})[1])
+    status, body = req(base_url + "/api/ready", method="POST", body={"number": 9})
+    assert status == 200
+    assert body == {"number": 9}
+    assert calls == [9]
+
+
 class TestGuard:
     """These endpoints run git, gh and the open command, so another origin in
     the user's browser must not be able to reach them."""

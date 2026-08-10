@@ -346,6 +346,7 @@ import { hasTerms, term, toggleTerms } from "./query.mjs";
 const SECTIONS = [
   ["yours_act",   "🛠️ Your PRs — act",     "yours where the next move is yours: feedback, failures, conflicts, or just CI left"],
   ["review",      "🎯 Review now",        "others' PRs that need your eyes"],
+  ["yours_drafts", "📝 Your drafts",       "yours, not yet open for review"],
   ["merge_ready", "🚀 Merge-ready",        "others' PRs you could land: approved, green, no conflicts"],
   ["waiting",     "⏳ Waiting",            "on authors or other reviewers"],
   ["drafts",      "📝 Drafts",             "not ready for review"],
@@ -363,7 +364,8 @@ const QUERY_KEY = "pr-triage-query";
 const COLLAPSED_KEY = "pr-triage-collapsed";
 
 const state = {
-  prs: [], labels: [], viewer: null, repo: "", mergeMethod: null, openPopover: null,
+  prs: [], labels: [], viewer: null, repo: "", mergeMethod: null, assets: null,
+  openPopover: null,
 };
 const collapsed = new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) || "[]"));
 const $ = (s, el) => (el || document).querySelector(s);
@@ -449,6 +451,10 @@ async function load() {
   try {
     const q = qInput.value.trim();
     const data = await api("/api/prs" + (q ? "?q=" + encodeURIComponent(q) : ""));
+    // The page is running the HTML and modules it loaded; if those changed on
+    // disk, no amount of refreshing the data will show it.
+    if (state.assets && state.assets !== data.assets) return location.reload();
+    state.assets = data.assets;
     state.prs = data.prs;
     state.viewer = data.viewer;
     state.repo = data.repo;
@@ -611,6 +617,9 @@ function renderPR(pr) {
       ${pr.canMerge ? `<button class="merge" data-act="merge"
         title="Review and ${esc(mergeLabel().toLowerCase())} #${pr.number}"
         >${esc(mergeLabel())}</button>` : ""}
+      ${pr.bucket === "yours_drafts" ? `<button class="primary" data-act="ready"
+        title="Take #${pr.number} out of draft and open it for review"
+        >✓ Ready for review</button>` : ""}
       ${blockers.length ? `<div class="blocker"
         title="What stops #${pr.number} merging right now, first thing first"
         >${blockers.map((b, i) => `${i ? "" : "⛔ "}${esc(b)}`).join("<br>")}</div>` : ""}
@@ -621,6 +630,19 @@ function renderPR(pr) {
   $('[data-act="merge"]', el)?.addEventListener("click", e => {
     e.stopPropagation();
     mergeModal(pr);
+  });
+  $('[data-act="ready"]', el)?.addEventListener("click", async e => {
+    e.stopPropagation();
+    const btn = e.currentTarget;
+    btn.disabled = true; btn.textContent = "…";
+    try {
+      await api("/api/ready", post({ number: pr.number }));
+      toast(`#${pr.number} is ready for review`);
+      load();
+    } catch (err) {
+      toast(`#${pr.number}: ${err.message}`, true);
+      btn.disabled = false; btn.textContent = "✓ Ready for review";
+    }
   });
   $('[data-act="tasks"]', el)?.addEventListener("click", e => {
     e.stopPropagation();

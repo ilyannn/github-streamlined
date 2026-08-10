@@ -21,13 +21,16 @@ the current working directory; override with env vars to run from anywhere:
     PR_TRIAGE_QUERY     default search query        (default: is:open)
 """
 
+import hashlib
 import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -315,7 +318,9 @@ def classify(pr, me):
     landable = decision == "APPROVED" and ci_ok and not conflicting
 
     if draft:
-        bucket = "drafts"
+        # Your own drafts are yours to finish and mark ready; other people's are
+        # just noise until they do the same.
+        bucket = "yours_drafts" if mine else "drafts"
     elif mine:
         # Merge-ready is for other people's work that you could land. Your own
         # PR being landable is not a category of its own — merging it is simply
@@ -437,6 +442,7 @@ def fetch_prs(user_query):
         "mainCheckout": MAIN_CHECKOUT,
         "worktreeCount": len(trees),
         "mergeMethod": merge_method(),
+        "assets": asset_version(),
         "prs": prs,
     }
 
@@ -689,6 +695,14 @@ def merge_message(number):
         body = {"PR_BODY": pr.get("body") or "", "PR_TITLE": pr["title"]}.get(message, "")
 
     return {"method": method, "editable": True, "subject": subject, "body": body}
+
+
+def do_ready(number):
+    """Take a draft out of draft — the one action a draft of yours is waiting for."""
+    rc, out, err = sh(["gh", "pr", "ready", str(number), "--repo", REPO])
+    if rc != 0:
+        raise RuntimeError(err.strip() or out.strip())
+    return {"number": number, "output": (out or err).strip()}
 
 
 def do_merge(number, subject=None, body=None):
@@ -1085,6 +1099,9 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/merge":
                 self.send_json(200, do_merge(number, body.get("subject"), body.get("body")))
                 return
+            if url.path == "/api/ready":
+                self.send_json(200, do_ready(number))
+                return
             if url.path == "/api/checkout":
                 self.send_json(200, do_checkout(number, body.get("open")))
             elif url.path == "/api/labels":
@@ -1123,6 +1140,59 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(500, {"error": str(e)})
 
 
+def asset_version():
+    """Fingerprint of what the browser is holding, so a stale page can tell.
+
+    The page keeps running the HTML and modules it loaded; without this it only
+    picks up front-end changes when someone thinks to reload it.
+    """
+    # Hashed rather than "newest mtime": checking out an older revision of one
+    # file moves it backwards, which a maximum would not notice.
+    files = sorted([*HERE.glob("*.html"), *HERE.glob("*.mjs")])
+    stamps = [(path.name, path.stat().st_mtime) for path in files]
+    return hashlib.sha256(repr(stamps).encode()).hexdigest()[:12]
+
+
+def source_stamps():
+    """Modification times of the Python this process is running.
+
+    Only Python: index.html and the .mjs files are read from disk per request,
+    so those are picked up by reloading the page.
+    """
+    return {path: path.stat().st_mtime for path in HERE.glob("*.py")}
+
+
+def changed_files(stamps):
+    changed = []
+    for path, was in stamps.items():
+        try:
+            if path.stat().st_mtime != was:
+                changed.append(path)
+        except FileNotFoundError:
+            continue  # mid-write; the next tick will see it
+    return changed
+
+
+def watch_sources(interval=1.0):
+    """Restart this process when its own source changes.
+
+    A dashboard left open for days otherwise keeps serving the code it started
+    with, which is a quiet way to debug something already fixed.
+    """
+    stamps = source_stamps()
+
+    def loop():
+        while True:
+            time.sleep(interval)
+            changed = changed_files(stamps)
+            if changed:
+                names = ", ".join(path.name for path in changed)
+                print(f"↻ {names} changed — restarting", flush=True)
+                os.execv(sys.executable, [sys.executable, *sys.argv])
+
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def main():
     global REPO, MAIN_CHECKOUT
     REPO = detect_repo()
@@ -1130,6 +1200,8 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"PR triage for {REPO} → http://127.0.0.1:{PORT}")
     print(f"Checkout button operates on: {MAIN_CHECKOUT}")
+    if os.getenv("PR_TRIAGE_RELOAD", "1") != "0":
+        watch_sources()
     server.serve_forever()
 
 

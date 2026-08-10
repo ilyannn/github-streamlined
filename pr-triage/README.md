@@ -10,6 +10,7 @@ Open PRs are grouped into action buckets:
 | --- | --- |
 | 🎯 Review now | Others' PRs where your review is requested, you've never looked, code was pushed since your review, or new comments arrived since your last activity |
 | 🛠️ Your PRs — act | Anything of yours where the next move is yours: a review verdict to answer, failing CI, conflicts, new comments — or nothing left but the merge |
+| 📝 Your drafts | Yours, not open for review yet — each with a **Ready for review** button |
 | 🚀 Merge-ready | Other people's PRs you could land: approved, green CI, no conflicts |
 | ⏳ Waiting | On the author or other reviewers — nothing for you to do |
 | 📝 Drafts | Not ready for review |
@@ -128,6 +129,13 @@ Then open <http://127.0.0.1:8642>. The search box accepts GitHub search
 syntax, e.g. `is:open label:"my-team"`; press Enter to apply, and the query
 sticks across reloads. The page auto-refreshes every 2 minutes.
 
+## Reloading
+
+Left running, it keeps up with itself. Editing its Python restarts the process
+in place; editing the HTML or a module changes a fingerprint the page notices on
+its next refresh, and it reloads itself. So a dashboard open for days is never
+quietly running week-old code. Set `PR_TRIAGE_RELOAD=0` to hold it still.
+
 ## Configuration
 
 | Env var | Default | |
@@ -137,6 +145,7 @@ sticks across reloads. The page auto-refreshes every 2 minutes.
 | `PR_TRIAGE_CHECKOUT` | primary worktree of cwd's repo | Repo the worktree button operates on |
 | `PR_TRIAGE_WORKTREES` | `<checkout>/.worktrees` | Where new worktrees are created |
 | `PR_TRIAGE_QUERY` | `is:open` | Default search query |
+| `PR_TRIAGE_RELOAD` | `1` | Restart when the source changes; `0` to disable |
 
 ## Security model
 

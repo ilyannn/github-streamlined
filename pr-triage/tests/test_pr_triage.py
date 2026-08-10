@@ -68,7 +68,13 @@ class TestClassify:
     def test_draft_wins_over_everything(self):
         pr = make_pr(author=ME, draft=True, decision="CHANGES_REQUESTED", ci="FAILURE")
         bucket, _ = classify(pr, ME)
-        assert bucket == "drafts"
+        assert bucket == "yours_drafts"
+
+    def test_your_drafts_are_separated_from_other_peoples(self):
+        # Yours have an action attached — marking them ready; other people's do
+        # not, so they stay out of the way.
+        assert classify(make_pr(author=ME, draft=True), ME)[0] == "yours_drafts"
+        assert classify(make_pr(author="alice", draft=True), ME)[0] == "drafts"
 
     def test_mine_changes_requested(self):
         bucket, badges = classify(make_pr(author=ME, decision="CHANGES_REQUESTED"), ME)
