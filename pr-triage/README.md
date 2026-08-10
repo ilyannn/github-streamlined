@@ -129,6 +129,13 @@ Then open <http://127.0.0.1:8642>. The search box accepts GitHub search
 syntax, e.g. `is:open label:"my-team"`; press Enter to apply, and the query
 sticks across reloads. The page auto-refreshes every 2 minutes.
 
+It opens on everything that touches you — `is:open involves:@me | is:open
+review-requested:@me`. Two searches, because `involves:` covers what you
+authored, were assigned, commented on or were mentioned in, but *not* what is
+merely waiting on your review, and GitHub issue search has no OR. A `|`
+anywhere in the query asks for each side to be searched and the results merged,
+deduplicated by number. `is:open` on its own still gives you the whole repo.
+
 ## Reloading
 
 Left running, it keeps up with itself. Editing its Python restarts the process
@@ -151,7 +158,7 @@ matters if someone else is editing while you have it open.
 | `PR_TRIAGE_REPO` | detected via `gh repo view` in cwd | `owner/name` to triage |
 | `PR_TRIAGE_CHECKOUT` | primary worktree of cwd's repo | Repo the worktree button operates on |
 | `PR_TRIAGE_WORKTREES` | `<checkout>/.worktrees` | Where new worktrees are created |
-| `PR_TRIAGE_QUERY` | `is:open` | Default search query |
+| `PR_TRIAGE_QUERY` | `is:open involves:@me \| is:open review-requested:@me` | Default search query; `\|` merges several searches |
 | `PR_TRIAGE_RELOAD` | `1` | Restart when the source changes; `0` to disable |
 
 ## Security model

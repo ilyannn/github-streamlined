@@ -18,7 +18,7 @@ the current working directory; override with env vars to run from anywhere:
     PR_TRIAGE_REPO      owner/name                  (default: `gh repo view` in cwd)
     PR_TRIAGE_CHECKOUT  dir for the Checkout button (default: primary worktree of cwd)
     PR_TRIAGE_WORKTREES where worktrees are created (default: <checkout>/.worktrees)
-    PR_TRIAGE_QUERY     default search query        (default: is:open)
+    PR_TRIAGE_QUERY     default search query        (`|` merges searches)
 """
 
 import hashlib
@@ -39,7 +39,10 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = Path(__file__).resolve().parent
 PORT = int(os.getenv("PR_TRIAGE_PORT", "8642"))
-DEFAULT_QUERY = os.getenv("PR_TRIAGE_QUERY", "is:open")
+# Everything that touches you: what you are involved in, plus what is
+# waiting on your review. Those two qualifiers do not overlap and GitHub
+# cannot OR them, so `|` asks for both searches merged.
+DEFAULT_QUERY = os.getenv("PR_TRIAGE_QUERY", "is:open involves:@me | is:open review-requested:@me")
 
 # The only files served off disk, so a path can never escape this directory.
 STATIC = {
@@ -378,13 +381,37 @@ def waiting_on_mergeability(data):
     )
 
 
-def fetch_prs(user_query):
-    search = f"repo:{REPO} is:pr {user_query}"
-    data = run_search(search)
-    if waiting_on_mergeability(data):
-        time.sleep(1.5)
+def split_queries(user_query):
+    """Split a query on `|` into the searches whose results get merged.
+
+    GitHub issue search has no OR, and the two things you want on a triage
+    board — what involves you and what is waiting on your review — are separate
+    qualifiers with no overlap. So run several searches and merge them.
+    """
+    return [part.strip() for part in user_query.split("|") if part.strip()] or [user_query]
+
+
+def search_prs(user_query):
+    """(viewer, nodes) for one or more searches, deduplicated by PR number."""
+    viewer, nodes, seen = None, [], set()
+    for part in split_queries(user_query):
+        search = f"repo:{REPO} is:pr {part}"
         data = run_search(search)
-    me = data["viewer"]["login"]
+        if waiting_on_mergeability(data):
+            time.sleep(1.5)
+            data = run_search(search)
+        viewer = viewer or data["viewer"]
+        for pr in data["search"]["nodes"]:
+            if pr and pr["number"] not in seen:
+                seen.add(pr["number"])
+                nodes.append(pr)
+    return viewer, nodes
+
+
+def fetch_prs(user_query):
+    viewer, nodes = search_prs(user_query)
+    data = {"viewer": viewer, "search": {"issueCount": len(nodes), "nodes": nodes}}
+    me = viewer["login"]
     # One listing for the whole page, so each row can say whether its worktree
     # is already there ("Open") or still has to be made ("Add").
     trees = list_worktrees()

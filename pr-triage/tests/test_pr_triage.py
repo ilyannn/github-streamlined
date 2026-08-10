@@ -504,3 +504,67 @@ class TestFetchPrs:
         assert run("MERGEABLE", "CLEAN", "CHANGES_REQUESTED") is False
         assert run("MERGEABLE", "CLEAN", "REVIEW_REQUIRED") is False
         assert run("MERGEABLE", "CLEAN", None) is False
+
+
+class TestSplitQueries:
+    def test_a_single_query_is_left_alone(self):
+        assert pr_triage.split_queries("is:open") == ["is:open"]
+
+    def test_splits_and_trims(self):
+        assert pr_triage.split_queries("is:open involves:@me | is:open review-requested:@me") == [
+            "is:open involves:@me",
+            "is:open review-requested:@me",
+        ]
+
+    def test_ignores_empty_sides(self):
+        assert pr_triage.split_queries("is:open |") == ["is:open"]
+        assert pr_triage.split_queries("| is:open") == ["is:open"]
+
+    def test_an_empty_query_stays_one_search(self):
+        # Otherwise the caller would run no searches at all and show nothing.
+        assert pr_triage.split_queries("") == [""]
+        assert pr_triage.split_queries("  |  ") == ["  |  "]
+
+
+class TestSearchPrs:
+    def wire(self, monkeypatch, per_query):
+        searches = []
+
+        def fake_run(search):
+            searches.append(search)
+            numbers = per_query[len(searches) - 1]
+            return {
+                "viewer": {"login": ME, "avatarUrl": ""},
+                "search": {
+                    "issueCount": len(numbers),
+                    "nodes": [make_pr() | {"number": n} for n in numbers],
+                },
+            }
+
+        monkeypatch.setattr(pr_triage, "run_search", fake_run)
+        monkeypatch.setattr(pr_triage, "REPO", "acme/widgets")
+        return searches
+
+    def test_runs_one_search_per_part(self, monkeypatch):
+        searches = self.wire(monkeypatch, [[1], [2]])
+        pr_triage.search_prs("is:open involves:@me | is:open review-requested:@me")
+        assert searches == [
+            "repo:acme/widgets is:pr is:open involves:@me",
+            "repo:acme/widgets is:pr is:open review-requested:@me",
+        ]
+
+    def test_merges_results(self, monkeypatch):
+        self.wire(monkeypatch, [[1, 2], [3]])
+        _, nodes = pr_triage.search_prs("a | b")
+        assert [pr["number"] for pr in nodes] == [1, 2, 3]
+
+    def test_deduplicates_across_searches(self, monkeypatch):
+        # A PR you authored can also be one you were asked to review.
+        self.wire(monkeypatch, [[1, 2], [2, 3]])
+        _, nodes = pr_triage.search_prs("a | b")
+        assert [pr["number"] for pr in nodes] == [1, 2, 3]
+
+    def test_keeps_the_viewer_from_the_first_search(self, monkeypatch):
+        self.wire(monkeypatch, [[1], [2]])
+        viewer, _ = pr_triage.search_prs("a | b")
+        assert viewer["login"] == ME
