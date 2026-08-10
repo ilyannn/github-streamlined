@@ -80,9 +80,11 @@ class TestClassify:
         assert bucket == "yours_act"
         assert "CI failing" in badge_texts(badges)
 
-    def test_mine_approved_green_is_merge_ready(self):
+    def test_mine_approved_green_is_yours_to_merge(self):
+        # Merge-ready collects other people's landable work; landing your own
+        # is just the next thing on your list.
         bucket, badges = classify(make_pr(author=ME, decision="APPROVED", ci="SUCCESS"), ME)
-        assert bucket == "merge_ready"
+        assert bucket == "yours_act"
         assert "approved" in badge_texts(badges)
 
     def test_mine_new_comments_need_action(self):
@@ -109,16 +111,19 @@ class TestClassify:
         bucket, _ = classify(pr, ME)
         assert bucket == "waiting"
 
-    def test_mine_merge_ready_beats_new_comments(self):
-        # Approved and green is something you can land now, so it belongs in
-        # merge-ready rather than the pile of PRs needing work; the badge
-        # still reports the new comment.
-        pr = make_pr(
-            author=ME, decision="APPROVED", ci="SUCCESS", comments=[(ME, t(1)), ("alice", t(2))]
-        )
-        bucket, badges = classify(pr, ME)
-        assert bucket == "merge_ready"
-        assert "1 new comment" in badge_texts(badges)
+    def test_no_pr_of_yours_lands_in_merge_ready(self):
+        # Whatever state it is in, your own PR is never filed under other
+        # people's landable work.
+        for extra in (
+            {"decision": "APPROVED", "ci": "SUCCESS"},
+            {"decision": "APPROVED", "ci": "PENDING"},
+            {"decision": "APPROVED", "ci": "SUCCESS", "comments": [(ME, t(1)), ("alice", t(2))]},
+            {"decision": "CHANGES_REQUESTED"},
+            {"ci": "FAILURE"},
+            {},
+        ):
+            bucket, _ = classify(make_pr(author=ME, **extra), ME)
+            assert bucket != "merge_ready", extra
 
     def test_pushed_since_review_badge_suppressed_on_own_pr(self):
         # Inline comments on your own PR create COMMENTED pseudo-reviews;

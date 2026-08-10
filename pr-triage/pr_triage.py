@@ -275,16 +275,13 @@ def classify(pr, me):
     if draft:
         bucket = "drafts"
     elif mine:
-        # Merge-ready wins over "act": a PR of yours that is approved and green
-        # belongs with the ones you can land, even if a comment arrived since.
-        # The badge still says so.
-        if landable:
-            bucket = "merge_ready"
-        elif (
-            # Approved but not landable yet — CI still running, say. Reviewers
-            # are done, so the next move is yours; it is not waiting on anyone.
-            decision == "APPROVED"
-            or decision == "CHANGES_REQUESTED"
+        # Merge-ready is for other people's work that you could land. Your own
+        # PR being landable is not a category of its own — merging it is simply
+        # the next thing you have to do, so it stays in your pile.
+        if (
+            # Any review verdict means reviewers are done and the move is
+            # yours: merge it, fix it, or read what arrived.
+            decision in ("APPROVED", "CHANGES_REQUESTED")
             or ci in ("FAILURE", "ERROR")
             or conflicting
             or others_new

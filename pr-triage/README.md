@@ -9,8 +9,8 @@ Open PRs are grouped into action buckets:
 | Bucket | Meaning |
 | --- | --- |
 | 🎯 Review now | Others' PRs where your review is requested, you've never looked, code was pushed since your review, or new comments arrived since your last activity |
-| 🛠️ Your PRs — act | Your PRs with changes requested, failing CI, conflicts, or new comments |
-| 🚀 Merge-ready | Approved, green CI, no conflicts |
+| 🛠️ Your PRs — act | Anything of yours where the next move is yours: a review verdict to answer, failing CI, conflicts, new comments — or nothing left but the merge |
+| 🚀 Merge-ready | Other people's PRs you could land: approved, green CI, no conflicts |
 | ⏳ Waiting | On the author or other reviewers — nothing for you to do |
 | 📝 Drafts | Not ready for review |
 
