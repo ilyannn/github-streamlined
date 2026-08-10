@@ -140,6 +140,7 @@
   .chip.active, .badge.active { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent); }
   .meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
   .meta .add { color: var(--ok); } .meta .del { color: var(--danger); }
+  .meta .unresolved { color: var(--warn); }
   .meta a { color: inherit; }
   .flt {
     background: none; border: none; padding: 0; font: inherit; color: inherit;
@@ -251,6 +252,11 @@
     text-decoration: none; white-space: nowrap;
   }
   .automerge:hover { background: var(--hover); }
+  /* Sits where the merge button would be, saying why it is not there. */
+  .blocker {
+    padding: 5px 12px; border: 1px dashed var(--border); border-radius: 6px;
+    color: var(--muted); font-size: 12px; text-align: center; white-space: nowrap;
+  }
   button.cta { width: 100%; padding: 10px; font-size: 14px; margin-top: 4px; }
   .merge-note { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
   .merge-row { display: flex; gap: 8px; align-items: stretch; margin-top: 12px; }
@@ -578,7 +584,13 @@ function renderPR(pr) {
             title="Open the changed files"><span class="add">+${pr.additions}</span>
             <span class="del">−${pr.deletions}</span></a>
         · <button class="flt" data-act="comments"
-            title="Show the conversation on #${pr.number}">💬 ${pr.commentCount}</button>${tasks}${assignees}
+            title="Show the conversation on #${pr.number}: ${pr.commentCount} comment${
+              pr.commentCount === 1 ? "" : "s"} including inline review comments${
+              pr.unresolvedCount ? `, ${pr.unresolvedCount} thread${
+                pr.unresolvedCount === 1 ? "" : "s"} unresolved` : ""}"
+            >💬 ${pr.commentCount}${pr.unresolvedCount
+              ? ` <span class="unresolved">${pr.unresolvedCount} unresolved</span>` : ""
+            }</button>${tasks}${assignees}
       </div>
     </div>
     <div class="actions">
@@ -596,6 +608,9 @@ function renderPR(pr) {
       ${pr.canMerge ? `<button class="merge" data-act="merge"
         title="Review and ${esc(mergeLabel().toLowerCase())} #${pr.number}"
         >${esc(mergeLabel())}</button>` : ""}
+      ${!pr.canMerge && SHOW_BLOCKER.has(pr.mergeBlocker) ? `<div class="blocker"
+        title="This is what stops #${pr.number} merging right now"
+        >⛔ ${esc(pr.mergeBlocker)}</div>` : ""}
     </div>`;
 
   $('[data-act="checkout"]', el).onclick = () => checkout(pr, el);
@@ -800,6 +815,18 @@ function mergeLabel() {
   return { SQUASH: "Squash and merge", REBASE: "Rebase and merge" }[state.mergeMethod]
     || "Merge";
 }
+
+// Blockers worth spelling out where the merge button would be. "draft" and
+// "needs approval" are left out: the section the card sits in already says so,
+// and they would put a chip on most of the board.
+const SHOW_BLOCKER = new Set([
+  "conflicts with base",
+  "behind base",
+  "changes requested",
+  "checks failing",
+  "blocked by branch rules",
+  "GitHub is still working it out",
+]);
 
 const MERGE_STATE_NOTE = {
   UNSTABLE: "Some checks are failing, but none that this repository requires.",

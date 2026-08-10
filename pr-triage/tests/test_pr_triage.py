@@ -188,24 +188,6 @@ class TestClassify:
         assert bucket == "yours_act"
         assert "conflicts" in badge_texts(badges)
 
-    def test_behind_base_is_badged(self):
-        # Explains the missing merge button, and says what to do about it.
-        pr = make_pr(decision="APPROVED", ci="SUCCESS") | {
-            "mergeable": "MERGEABLE",
-            "mergeStateStatus": "BEHIND",
-        }
-        _, badges = classify(pr, ME)
-        assert "behind base" in badge_texts(badges)
-
-    def test_conflicts_outrank_behind_in_the_badges(self):
-        pr = make_pr(decision="APPROVED", ci="SUCCESS") | {
-            "mergeable": "CONFLICTING",
-            "mergeStateStatus": "BEHIND",
-        }
-        _, badges = classify(pr, ME)
-        assert "conflicts" in badge_texts(badges)
-        assert "behind base" not in badge_texts(badges)
-
     def test_someone_elses_conflicted_pr_waits_on_them(self):
         pr = make_pr(decision="APPROVED", ci="SUCCESS", reviews=[(ME, "APPROVED", t(2))]) | {
             "mergeable": "CONFLICTING"
@@ -265,6 +247,62 @@ class TestDoEdit:
                 "c",
             ]
         ]
+
+
+class TestMergeBlocker:
+    """One reason, the one a person would deal with first."""
+
+    def blocker(self, decision=None, ci=None, mergeable="MERGEABLE", state="CLEAN", draft=False):
+        pr = make_pr(draft=draft) | {"mergeable": mergeable, "mergeStateStatus": state}
+        return pr_triage.merge_blocker(pr, decision, ci)
+
+    def test_nothing_blocks_an_approved_clean_pr(self):
+        assert self.blocker(decision="APPROVED", ci="SUCCESS") is None
+
+    def test_draft_first(self):
+        assert self.blocker(draft=True, mergeable="CONFLICTING", decision="APPROVED") == "draft"
+
+    def test_conflicts_before_being_behind(self):
+        assert self.blocker(mergeable="CONFLICTING", state="BEHIND") == "conflicts with base"
+
+    def test_behind_before_review_state(self):
+        # Both are true of a stale PR with an outstanding review; the branch is
+        # the thing you touch first.
+        assert self.blocker(state="BEHIND", decision="CHANGES_REQUESTED") == "behind base"
+
+    def test_changes_requested(self):
+        assert self.blocker(decision="CHANGES_REQUESTED", state="BLOCKED") == "changes requested"
+
+    def test_failing_checks(self):
+        assert self.blocker(decision="APPROVED", ci="FAILURE", state="BLOCKED") == "checks failing"
+
+    def test_missing_approval(self):
+        assert self.blocker(decision="REVIEW_REQUIRED", state="BLOCKED") == "needs approval"
+        assert self.blocker(decision=None, state="BLOCKED") == "needs approval"
+
+    def test_branch_rules_when_nothing_else_explains_it(self):
+        assert self.blocker(decision="APPROVED", ci="SUCCESS", state="BLOCKED") == (
+            "blocked by branch rules"
+        )
+
+    def test_unknown_while_github_computes(self):
+        assert self.blocker(
+            decision="APPROVED", ci="SUCCESS", mergeable="UNKNOWN", state="UNKNOWN"
+        ) == ("GitHub is still working it out")
+
+
+class TestUnresolvedThreads:
+    def test_counts_only_the_open_ones(self):
+        pr = make_pr() | {
+            "reviewThreads": {
+                "nodes": [{"isResolved": True}, {"isResolved": False}, {"isResolved": False}]
+            }
+        }
+        assert pr_triage.unresolved_threads(pr) == 2
+
+    def test_none_when_absent(self):
+        assert pr_triage.unresolved_threads(make_pr()) == 0
+        assert pr_triage.unresolved_threads(make_pr() | {"reviewThreads": {"nodes": []}}) == 0
 
 
 class TestAutoMerge:

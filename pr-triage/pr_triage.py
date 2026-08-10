@@ -77,6 +77,10 @@ query($q: String!) {
         commits(last: 1) { totalCount nodes { commit { committedDate statusCheckRollup { state } } } }
         reviews(last: 100) { nodes { author { login } state submittedAt } }
         comments(last: 100) { totalCount nodes { author { login } createdAt } }
+        # Everything anyone said, inline comments included; `comments` alone is
+        # just the conversation tab and badly understates a reviewed PR.
+        totalCommentsCount
+        reviewThreads(first: 100) { nodes { isResolved } }
       }
     }
   }
@@ -194,6 +198,38 @@ def set_task(number, index, done):
     return {"number": number, "tasks": parse_tasks(updated)}
 
 
+def merge_blocker(pr, decision, ci):
+    """What stops this merging right now, in a few words, or None if nothing does.
+
+    The order is the order a person would hit them: a draft is not up for
+    merging at all, conflicts and being behind need the branch touched,
+    reviews and checks come next, and anything left is the branch rules.
+    """
+    if pr["isDraft"]:
+        return "draft"
+    if pr.get("mergeable") == "CONFLICTING":
+        return "conflicts with base"
+    state = pr.get("mergeStateStatus")
+    if state == "BEHIND":
+        return "behind base"
+    if decision == "CHANGES_REQUESTED":
+        return "changes requested"
+    if ci in ("FAILURE", "ERROR"):
+        return "checks failing"
+    if decision != "APPROVED":
+        return "needs approval"
+    if state == "BLOCKED":
+        return "blocked by branch rules"
+    if pr.get("mergeable") != "MERGEABLE" or state not in MERGEABLE_STATES:
+        return "GitHub is still working it out"
+    return None
+
+
+def unresolved_threads(pr):
+    threads = (pr.get("reviewThreads") or {}).get("nodes") or []
+    return sum(1 for thread in threads if not thread.get("isResolved"))
+
+
 def auto_merge(pr):
     """Auto-merge, if it is armed: GitHub merges this one once it is allowed to."""
     request = pr.get("autoMergeRequest")
@@ -252,10 +288,6 @@ def classify(pr, me):
     if pr.get("mergeable") == "CONFLICTING":
         # Otherwise an approved, green PR with no merge button looks broken.
         badges.append({"text": "conflicts", "kind": "danger"})
-    elif pr.get("mergeStateStatus") == "BEHIND":
-        # Same reasoning: this is why there is no merge button, and it says
-        # what to do about it.
-        badges.append({"text": "behind base", "kind": "warn"})
     if decision == "CHANGES_REQUESTED":
         badges.append({"text": "changes requested", "kind": "danger"})
     elif decision == "APPROVED":
@@ -353,6 +385,12 @@ def fetch_prs(user_query):
         bucket, badges = classify(pr, me)
         done, total = count_tasks(pr.get("body"))
         found = find_worktree(trees, pr["number"], pr["headRefName"])
+        commit = (pr["commits"]["nodes"] or [{}])[0].get("commit", {})
+        blocker = merge_blocker(
+            pr,
+            pr.get("reviewDecision"),
+            (commit.get("statusCheckRollup") or {}).get("state"),
+        )
         prs.append(
             {
                 "number": pr["number"],
@@ -369,17 +407,13 @@ def fetch_prs(user_query):
                 "deletions": pr["deletions"],
                 "labels": pr["labels"]["nodes"],
                 "assignees": [a["login"] for a in pr["assignees"]["nodes"]],
-                "commentCount": pr["comments"]["totalCount"],
+                "commentCount": pr.get("totalCommentsCount", pr["comments"]["totalCount"]),
+                "unresolvedCount": unresolved_threads(pr),
                 "commitCount": pr["commits"]["totalCount"],
-                "canMerge": (
-                    pr.get("mergeable") == "MERGEABLE"
-                    and pr.get("mergeStateStatus") in MERGEABLE_STATES
-                    # mergeStateStatus alone is not enough: it reports a single
-                    # reason, so a PR that is both out of date and blocked by a
-                    # changes-requested review comes back BEHIND, not BLOCKED.
-                    and pr.get("reviewDecision") == "APPROVED"
-                    and not pr["isDraft"]
-                ),
+                # One source of truth: it can merge exactly when nothing blocks
+                # it, and the card can say which thing that is.
+                "canMerge": blocker is None,
+                "mergeBlocker": blocker,
                 "mergeState": pr.get("mergeStateStatus"),
                 "autoMerge": auto_merge(pr),
                 "tasksDone": done,

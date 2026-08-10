@@ -48,9 +48,10 @@ link to the PR's checks instead — GitHub search has no qualifier for them.
 To edit rather than filter, hover a card: a ✎ appears after the labels and
 after the assignees, opening the same pickers the buttons used to.
 
-The rest of the meta line opens things: **💬** shows the conversation as a
-tree — review threads with their replies, reviews and issue comments, each
-timestamped and linked; **☑** lists the PR's task list, and ticking a box
+The rest of the meta line opens things: **💬** counts everything anyone said,
+inline review comments included, with the number of unresolved threads beside
+it, and opens the conversation as a tree — review threads with their replies,
+reviews and issue comments, each timestamped and linked; **☑** lists the PR's task list, and ticking a box
 there edits the pull request body on GitHub; the commit count and the
 **+/−** counts link to the commits and the diff.
 
@@ -65,6 +66,11 @@ one, labelled with the method the repository actually allows — **Squash and
 merge**, **Rebase and merge** or **Merge**, read from its settings rather than
 assumed. It opens a dialog with what is still outstanding — unresolved review
 threads and unticked tasks — above a single large button that merges.
+
+Where a PR cannot be merged, that space says why instead — behind base,
+conflicts, failing checks, or the branch rules — so a missing button is never
+a mystery. Nothing here bypasses anything: merging goes through the API, which
+enforces the repository's rules, and the admin override flag is never passed.
 
 **✎ Edit commit message** there opens the message GitHub itself would commit,
 composed from the repository's own settings (whether the subject comes from
