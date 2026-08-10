@@ -67,9 +67,11 @@ merge**, **Rebase and merge** or **Merge**, read from its settings rather than
 assumed. It opens a dialog with what is still outstanding — unresolved review
 threads and unticked tasks — above a single large button that merges.
 
-Where a PR cannot be merged, that space says why instead — behind base,
-conflicts, failing checks, or the branch rules — so a missing button is never
-a mystery. Nothing here bypasses anything: merging goes through the API, which
+Where a PR cannot be merged, that space lists everything standing in the way
+instead — conflicts, failing or running checks, a review verdict, a missing
+approval, a stale branch — worst first, so a missing button is never a mystery.
+A PR that needs a review *and* is out of date says both: updating the branch
+alone would not have got it merged. Nothing here bypasses anything: merging goes through the API, which
 enforces the repository's rules, and the admin override flag is never passed.
 
 **✎ Edit commit message** there opens the message GitHub itself would commit,

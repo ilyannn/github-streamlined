@@ -256,6 +256,7 @@
   .blocker {
     padding: 5px 12px; border: 1px dashed var(--border); border-radius: 6px;
     color: var(--muted); font-size: 12px; text-align: center; white-space: nowrap;
+    line-height: 1.5;
   }
   button.cta { width: 100%; padding: 10px; font-size: 14px; margin-top: 4px; }
   .merge-note { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
@@ -555,6 +556,8 @@ function renderPR(pr) {
 
   // Titles here are conventionally "[scope] what changed"; lift the scope out
   // into its own box so it reads as a tag and can filter like one.
+  const blockers = (pr.mergeBlockers || []).filter(b => b !== HIDDEN_BLOCKER);
+
   const scope = /^\[([^\]]+)\]\s*/.exec(pr.title);
   const scopeBox = scope
     ? filterButton("chip scope", `"[${scope[1]}]" in:title`, scope[1], "",
@@ -608,9 +611,9 @@ function renderPR(pr) {
       ${pr.canMerge ? `<button class="merge" data-act="merge"
         title="Review and ${esc(mergeLabel().toLowerCase())} #${pr.number}"
         >${esc(mergeLabel())}</button>` : ""}
-      ${!pr.canMerge && SHOW_BLOCKER.has(pr.mergeBlocker) ? `<div class="blocker"
-        title="This is what stops #${pr.number} merging right now"
-        >⛔ ${esc(pr.mergeBlocker)}</div>` : ""}
+      ${blockers.length ? `<div class="blocker"
+        title="What stops #${pr.number} merging right now, first thing first"
+        >${blockers.map((b, i) => `${i ? "" : "⛔ "}${esc(b)}`).join("<br>")}</div>` : ""}
     </div>`;
 
   $('[data-act="checkout"]', el).onclick = () => checkout(pr, el);
@@ -816,17 +819,9 @@ function mergeLabel() {
     || "Merge";
 }
 
-// Blockers worth spelling out where the merge button would be. "draft" and
-// "needs approval" are left out: the section the card sits in already says so,
-// and they would put a chip on most of the board.
-const SHOW_BLOCKER = new Set([
-  "conflicts with base",
-  "behind base",
-  "changes requested",
-  "checks failing",
-  "blocked by branch rules",
-  "GitHub is still working it out",
-]);
+// "draft" is the one blocker not worth a line: the section the card sits in
+// already says exactly that.
+const HIDDEN_BLOCKER = "draft";
 
 const MERGE_STATE_NOTE = {
   UNSTABLE: "Some checks are failing, but none that this repository requires.",

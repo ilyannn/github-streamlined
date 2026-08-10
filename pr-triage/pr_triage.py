@@ -198,31 +198,37 @@ def set_task(number, index, done):
     return {"number": number, "tasks": parse_tasks(updated)}
 
 
-def merge_blocker(pr, decision, ci):
-    """What stops this merging right now, in a few words, or None if nothing does.
+def merge_blockers(pr, decision, ci):
+    """Everything standing between this PR and a merge, worst first.
 
-    The order is the order a person would hit them: a draft is not up for
-    merging at all, conflicts and being behind need the branch touched,
-    reviews and checks come next, and anything left is the branch rules.
+    All of them, not just the first: a PR can need a review *and* be out of
+    date, and reporting only one of those hides the gate behind the last mile.
+    The order is what to deal with first — a missing approval matters more than
+    a stale branch, which is one click and often has to be redone after review.
     """
     if pr["isDraft"]:
-        return "draft"
+        return ["draft"]
+    blockers = []
     if pr.get("mergeable") == "CONFLICTING":
-        return "conflicts with base"
-    state = pr.get("mergeStateStatus")
-    if state == "BEHIND":
-        return "behind base"
-    if decision == "CHANGES_REQUESTED":
-        return "changes requested"
+        blockers.append("conflicts with base")
     if ci in ("FAILURE", "ERROR"):
-        return "checks failing"
-    if decision != "APPROVED":
-        return "needs approval"
-    if state == "BLOCKED":
-        return "blocked by branch rules"
-    if pr.get("mergeable") != "MERGEABLE" or state not in MERGEABLE_STATES:
-        return "GitHub is still working it out"
-    return None
+        blockers.append("checks failing")
+    elif ci == "PENDING":
+        blockers.append("checks running")
+    if decision == "CHANGES_REQUESTED":
+        blockers.append("changes requested")
+    elif decision != "APPROVED":
+        blockers.append("needs approval")
+    if pr.get("mergeStateStatus") == "BEHIND":
+        blockers.append("behind base")
+    if not blockers:
+        # Nothing of ours explains it, so fall back to GitHub's own verdict.
+        state = pr.get("mergeStateStatus")
+        if state == "BLOCKED":
+            blockers.append("blocked by branch rules")
+        elif pr.get("mergeable") != "MERGEABLE" or state not in MERGEABLE_STATES:
+            blockers.append("GitHub is still working it out")
+    return blockers
 
 
 def unresolved_threads(pr):
@@ -386,7 +392,7 @@ def fetch_prs(user_query):
         done, total = count_tasks(pr.get("body"))
         found = find_worktree(trees, pr["number"], pr["headRefName"])
         commit = (pr["commits"]["nodes"] or [{}])[0].get("commit", {})
-        blocker = merge_blocker(
+        blockers = merge_blockers(
             pr,
             pr.get("reviewDecision"),
             (commit.get("statusCheckRollup") or {}).get("state"),
@@ -412,8 +418,8 @@ def fetch_prs(user_query):
                 "commitCount": pr["commits"]["totalCount"],
                 # One source of truth: it can merge exactly when nothing blocks
                 # it, and the card can say which thing that is.
-                "canMerge": blocker is None,
-                "mergeBlocker": blocker,
+                "canMerge": not blockers,
+                "mergeBlockers": blockers,
                 "mergeState": pr.get("mergeStateStatus"),
                 "autoMerge": auto_merge(pr),
                 "tasksDone": done,

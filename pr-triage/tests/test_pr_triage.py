@@ -249,46 +249,62 @@ class TestDoEdit:
         ]
 
 
-class TestMergeBlocker:
-    """One reason, the one a person would deal with first."""
+class TestMergeBlockers:
+    """Every reason, ordered by what to deal with first."""
 
-    def blocker(self, decision=None, ci=None, mergeable="MERGEABLE", state="CLEAN", draft=False):
+    def blockers(self, decision=None, ci=None, mergeable="MERGEABLE", state="CLEAN", draft=False):
         pr = make_pr(draft=draft) | {"mergeable": mergeable, "mergeStateStatus": state}
-        return pr_triage.merge_blocker(pr, decision, ci)
+        return pr_triage.merge_blockers(pr, decision, ci)
 
     def test_nothing_blocks_an_approved_clean_pr(self):
-        assert self.blocker(decision="APPROVED", ci="SUCCESS") is None
+        assert self.blockers(decision="APPROVED", ci="SUCCESS") == []
 
-    def test_draft_first(self):
-        assert self.blocker(draft=True, mergeable="CONFLICTING", decision="APPROVED") == "draft"
+    def test_draft_says_only_that(self):
+        assert self.blockers(draft=True, mergeable="CONFLICTING") == ["draft"]
 
-    def test_conflicts_before_being_behind(self):
-        assert self.blocker(mergeable="CONFLICTING", state="BEHIND") == "conflicts with base"
+    def test_a_stale_unapproved_pr_reports_both(self):
+        # The review is the gate, the stale branch the last mile. Reporting only
+        # "behind base" would send you to update a branch that still cannot
+        # merge afterwards.
+        assert self.blockers(decision="REVIEW_REQUIRED", state="BEHIND") == [
+            "needs approval",
+            "behind base",
+        ]
 
-    def test_behind_before_review_state(self):
-        # Both are true of a stale PR with an outstanding review; the branch is
-        # the thing you touch first.
-        assert self.blocker(state="BEHIND", decision="CHANGES_REQUESTED") == "behind base"
+    def test_review_comes_before_the_branch(self):
+        assert self.blockers(decision="CHANGES_REQUESTED", state="BEHIND") == [
+            "changes requested",
+            "behind base",
+        ]
 
-    def test_changes_requested(self):
-        assert self.blocker(decision="CHANGES_REQUESTED", state="BLOCKED") == "changes requested"
+    def test_checks_come_before_review(self):
+        assert self.blockers(decision="REVIEW_REQUIRED", ci="FAILURE") == [
+            "checks failing",
+            "needs approval",
+        ]
 
-    def test_failing_checks(self):
-        assert self.blocker(decision="APPROVED", ci="FAILURE", state="BLOCKED") == "checks failing"
+    def test_conflicts_come_first_of_all(self):
+        assert self.blockers(mergeable="CONFLICTING", ci="FAILURE", decision="REVIEW_REQUIRED") == [
+            "conflicts with base",
+            "checks failing",
+            "needs approval",
+        ]
 
-    def test_missing_approval(self):
-        assert self.blocker(decision="REVIEW_REQUIRED", state="BLOCKED") == "needs approval"
-        assert self.blocker(decision=None, state="BLOCKED") == "needs approval"
+    def test_running_checks_are_a_blocker_too(self):
+        assert self.blockers(decision="APPROVED", ci="PENDING") == ["checks running"]
+
+    def test_approved_and_green_but_only_stale(self):
+        assert self.blockers(decision="APPROVED", ci="SUCCESS", state="BEHIND") == ["behind base"]
 
     def test_branch_rules_when_nothing_else_explains_it(self):
-        assert self.blocker(decision="APPROVED", ci="SUCCESS", state="BLOCKED") == (
+        assert self.blockers(decision="APPROVED", ci="SUCCESS", state="BLOCKED") == [
             "blocked by branch rules"
-        )
+        ]
 
     def test_unknown_while_github_computes(self):
-        assert self.blocker(
+        assert self.blockers(
             decision="APPROVED", ci="SUCCESS", mergeable="UNKNOWN", state="UNKNOWN"
-        ) == ("GitHub is still working it out")
+        ) == ["GitHub is still working it out"]
 
 
 class TestUnresolvedThreads:
