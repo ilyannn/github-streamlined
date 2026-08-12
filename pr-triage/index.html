@@ -532,8 +532,13 @@ function renderPR(pr) {
     // CI badges point at the run rather than a filter — there is no search
     // qualifier for "the checks on this PR".
     if (b.text.startsWith("CI")) {
-      return `<a class="badge ${b.kind}" href="${esc(pr.url)}/checks" target="_blank"
-        rel="noreferrer" title="Open the checks for #${pr.number}">${esc(b.text)}</a>`;
+      // Straight to the build that failed where the check reported one —
+      // Buildkite, say — rather than GitHub's list of checks.
+      const href = pr.ciUrl || `${pr.url}/checks`;
+      return `<a class="badge ${b.kind}" href="${esc(href)}" target="_blank"
+        rel="noreferrer" title="${pr.ciUrl
+          ? `Open the build for #${pr.number}` : `Open the checks for #${pr.number}`}"
+        >${esc(b.text)}</a>`;
     }
     const t = BADGE_FILTERS[b.text];
     if (t) return filterButton(`badge ${b.kind}`, t, b.text, "", `Filter by ${t}`);

@@ -1,6 +1,7 @@
 """Unit tests for the pure logic: classification, parsing, gh command building."""
 
 import json
+import time
 
 import pr_triage
 import pytest
@@ -378,12 +379,11 @@ class TestMergeabilityRetry:
         replies = self.cold_then_warm(monkeypatch, "APPROVED", draft=True)
         assert pr_triage.waiting_on_mergeability(replies[0]) is False
 
-    def test_retries_once_and_uses_the_second_answer(self, monkeypatch):
-        calls = []
+    def test_retries_only_the_merge_state_not_the_whole_board(self, monkeypatch):
+        searches, state_calls = [], []
 
         def fake_run(search):
-            calls.append(search)
-            state = "UNKNOWN" if len(calls) == 1 else "MERGEABLE"
+            searches.append(search)
             pr = make_pr(author="alice", decision="APPROVED") | {
                 "number": 1,
                 "title": "t",
@@ -396,22 +396,29 @@ class TestMergeabilityRetry:
                 "deletions": 0,
                 "labels": {"nodes": []},
                 "assignees": {"nodes": []},
-                "mergeable": state,
-                "mergeStateStatus": "CLEAN" if state == "MERGEABLE" else "UNKNOWN",
             }
             return {
                 "viewer": {"login": ME, "avatarUrl": ""},
                 "search": {"issueCount": 1, "nodes": [pr]},
             }
 
+        def fake_state(numbers):
+            state_calls.append(list(numbers))
+            if len(state_calls) == 1:
+                return {1: ("UNKNOWN", "UNKNOWN")}
+            return {1: ("MERGEABLE", "CLEAN")}
+
         monkeypatch.setattr(pr_triage, "run_search", fake_run)
+        monkeypatch.setattr(pr_triage, "merge_state_for", fake_state)
         monkeypatch.setattr(pr_triage, "list_worktrees", list)
         monkeypatch.setattr(pr_triage, "merge_method", lambda: "SQUASH")
         monkeypatch.setattr(pr_triage.time, "sleep", lambda s: None)
 
         result = pr_triage.fetch_prs("is:open")
 
-        assert len(calls) == 2  # exactly one retry, not a loop
+        # The expensive part is the search; only the cheap follow-up repeats.
+        assert len(searches) == 1
+        assert state_calls == [[1], [1]]
         assert result["prs"][0]["canMerge"] is True
 
 
@@ -441,6 +448,7 @@ class TestFetchPrs:
             pr_triage, "sh", lambda args, **k: (calls.append(args), (0, json.dumps(payload), ""))[1]
         )
         monkeypatch.setattr(pr_triage, "REPO", "acme/widgets")
+        monkeypatch.setattr(pr_triage, "merge_state_for", lambda ns: {})
 
         out = pr_triage.fetch_prs("is:open")
 
@@ -469,8 +477,6 @@ class TestFetchPrs:
                 "deletions": 0,
                 "labels": {"nodes": []},
                 "assignees": {"nodes": []},
-                "mergeable": mergeable,
-                "mergeStateStatus": state,
             }
             return {
                 "data": {
@@ -485,6 +491,10 @@ class TestFetchPrs:
                 "sh",
                 lambda args, **k: (0, json.dumps(payload(mergeable, state, decision)), ""),
             )
+            monkeypatch.setattr(pr_triage, "merge_state_for", lambda ns: {1: (mergeable, state)})
+            # Each case is a different answer for the same PR, so the cache
+            # from the previous one has to go.
+            pr_triage._merge_state.clear()
             monkeypatch.setattr(pr_triage, "merge_method", lambda: "SQUASH")
             return pr_triage.fetch_prs("is:open")["prs"][0]["canMerge"]
 
@@ -506,65 +516,71 @@ class TestFetchPrs:
         assert run("MERGEABLE", "CLEAN", None) is False
 
 
-class TestSplitQueries:
-    def test_a_single_query_is_left_alone(self):
-        assert pr_triage.split_queries("is:open") == ["is:open"]
+class TestMergeStateCache:
+    """Mergeability costs seconds, so it is asked for as rarely as possible."""
 
-    def test_splits_and_trims(self):
-        assert pr_triage.split_queries("is:open involves:@me | is:open review-requested:@me") == [
-            "is:open involves:@me",
-            "is:open review-requested:@me",
-        ]
+    @pytest.fixture(autouse=True)
+    def clean(self, monkeypatch):
+        monkeypatch.setattr(pr_triage, "_merge_state", {})
 
-    def test_ignores_empty_sides(self):
-        assert pr_triage.split_queries("is:open |") == ["is:open"]
-        assert pr_triage.split_queries("| is:open") == ["is:open"]
+    def nodes(self, updated=None):
+        return [{"number": 1, "updatedAt": updated or t(1)}]
 
-    def test_an_empty_query_stays_one_search(self):
-        # Otherwise the caller would run no searches at all and show nothing.
-        assert pr_triage.split_queries("") == [""]
-        assert pr_triage.split_queries("  |  ") == ["  |  "]
+    def test_asks_once_then_reuses(self, monkeypatch):
+        asked = []
+        monkeypatch.setattr(
+            pr_triage,
+            "merge_state_for",
+            lambda ns: (asked.append(list(ns)), {1: ("MERGEABLE", "CLEAN")})[1],
+        )
+        nodes = self.nodes()
+        pr_triage.apply_merge_state(nodes)
+        assert nodes[0]["mergeStateStatus"] == "CLEAN"
+        again = self.nodes()
+        pr_triage.apply_merge_state(again)
+        assert again[0]["mergeStateStatus"] == "CLEAN"
+        assert asked == [[1]]  # the second refresh cost nothing
 
+    def test_asks_again_when_the_pr_moved(self, monkeypatch):
+        asked = []
+        monkeypatch.setattr(
+            pr_triage,
+            "merge_state_for",
+            lambda ns: (asked.append(list(ns)), {1: ("MERGEABLE", "CLEAN")})[1],
+        )
+        pr_triage.apply_merge_state(self.nodes(t(1)))
+        pr_triage.apply_merge_state(self.nodes(t(2)))
+        assert asked == [[1], [1]]
 
-class TestSearchPrs:
-    def wire(self, monkeypatch, per_query):
-        searches = []
+    def test_asks_again_once_it_goes_stale(self, monkeypatch):
+        # The base branch moving makes a PR out of date without touching it.
+        asked = []
+        monkeypatch.setattr(
+            pr_triage,
+            "merge_state_for",
+            lambda ns: (asked.append(list(ns)), {1: ("MERGEABLE", "CLEAN")})[1],
+        )
+        pr_triage.apply_merge_state(self.nodes())
+        clock = time.monotonic() + pr_triage.MERGE_STATE_MAX_AGE + 1
+        monkeypatch.setattr(pr_triage.time, "monotonic", lambda: clock)
+        pr_triage.apply_merge_state(self.nodes())
+        assert asked == [[1], [1]]
 
-        def fake_run(search):
-            searches.append(search)
-            numbers = per_query[len(searches) - 1]
-            return {
-                "viewer": {"login": ME, "avatarUrl": ""},
-                "search": {
-                    "issueCount": len(numbers),
-                    "nodes": [make_pr() | {"number": n} for n in numbers],
-                },
-            }
+    def test_never_caches_an_unknown(self, monkeypatch):
+        asked = []
+        monkeypatch.setattr(
+            pr_triage,
+            "merge_state_for",
+            lambda ns: (asked.append(list(ns)), {1: ("UNKNOWN", "UNKNOWN")})[1],
+        )
+        pr_triage.apply_merge_state(self.nodes())
+        pr_triage.apply_merge_state(self.nodes())
+        assert asked == [[1], [1]]
 
-        monkeypatch.setattr(pr_triage, "run_search", fake_run)
-        monkeypatch.setattr(pr_triage, "REPO", "acme/widgets")
-        return searches
-
-    def test_runs_one_search_per_part(self, monkeypatch):
-        searches = self.wire(monkeypatch, [[1], [2]])
-        pr_triage.search_prs("is:open involves:@me | is:open review-requested:@me")
-        assert searches == [
-            "repo:acme/widgets is:pr is:open involves:@me",
-            "repo:acme/widgets is:pr is:open review-requested:@me",
-        ]
-
-    def test_merges_results(self, monkeypatch):
-        self.wire(monkeypatch, [[1, 2], [3]])
-        _, nodes = pr_triage.search_prs("a | b")
-        assert [pr["number"] for pr in nodes] == [1, 2, 3]
-
-    def test_deduplicates_across_searches(self, monkeypatch):
-        # A PR you authored can also be one you were asked to review.
-        self.wire(monkeypatch, [[1, 2], [2, 3]])
-        _, nodes = pr_triage.search_prs("a | b")
-        assert [pr["number"] for pr in nodes] == [1, 2, 3]
-
-    def test_keeps_the_viewer_from_the_first_search(self, monkeypatch):
-        self.wire(monkeypatch, [[1], [2]])
-        viewer, _ = pr_triage.search_prs("a | b")
-        assert viewer["login"] == ME
+    def test_asks_for_nothing_when_everything_is_known(self, monkeypatch):
+        monkeypatch.setattr(pr_triage, "merge_state_for", lambda ns: {1: ("MERGEABLE", "CLEAN")})
+        pr_triage.apply_merge_state(self.nodes())
+        monkeypatch.setattr(
+            pr_triage, "merge_state_for", lambda ns: pytest.fail(f"asked again for {list(ns)}")
+        )
+        pr_triage.apply_merge_state(self.nodes())

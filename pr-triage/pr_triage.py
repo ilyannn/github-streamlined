@@ -18,7 +18,7 @@ the current working directory; override with env vars to run from anywhere:
     PR_TRIAGE_REPO      owner/name                  (default: `gh repo view` in cwd)
     PR_TRIAGE_CHECKOUT  dir for the Checkout button (default: primary worktree of cwd)
     PR_TRIAGE_WORKTREES where worktrees are created (default: <checkout>/.worktrees)
-    PR_TRIAGE_QUERY     default search query        (`|` merges searches)
+    PR_TRIAGE_QUERY     default search query
 """
 
 import hashlib
@@ -32,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,10 +40,10 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = Path(__file__).resolve().parent
 PORT = int(os.getenv("PR_TRIAGE_PORT", "8642"))
-# Everything that touches you: what you are involved in, plus what is
-# waiting on your review. Those two qualifiers do not overlap and GitHub
-# cannot OR them, so `|` asks for both searches merged.
-DEFAULT_QUERY = os.getenv("PR_TRIAGE_QUERY", "is:open involves:@me | is:open review-requested:@me")
+# Everything that touches you: involves: covers what you authored, were
+# assigned, commented on or were mentioned in, but not what is merely
+# waiting on your review.
+DEFAULT_QUERY = os.getenv("PR_TRIAGE_QUERY", "is:open (involves:@me OR review-requested:@me)")
 
 # The only files served off disk, so a path can never escape this directory.
 STATIC = {
@@ -63,12 +64,12 @@ LABEL_RE = re.compile(r"^[^,]{1,100}$")
 GRAPHQL_QUERY = """
 query($q: String!) {
   viewer { login avatarUrl }
-  search(query: $q, type: ISSUE, first: 50) {
+  search(query: $q, type: ISSUE_ADVANCED, first: 50) {
     issueCount
     nodes {
       ... on PullRequest {
         number title url body isDraft reviewDecision createdAt updatedAt
-        headRefName additions deletions mergeable mergeStateStatus
+        headRefName additions deletions
         autoMergeRequest { enabledAt mergeMethod enabledBy { login } }
         author { login avatarUrl }
         labels(first: 20) { nodes { name color } }
@@ -80,7 +81,19 @@ query($q: String!) {
             ... on Team { name }
           } }
         }
-        commits(last: 1) { totalCount nodes { commit { committedDate statusCheckRollup { state } } } }
+        commits(last: 1) { totalCount nodes { commit {
+          committedDate
+          statusCheckRollup {
+            state
+            # The individual runs, so the CI badge can link to the one that
+            # actually failed (Buildkite, say) instead of a list of them.
+            contexts(first: 20) { nodes {
+              __typename
+              ... on CheckRun { status conclusion detailsUrl }
+              ... on StatusContext { state targetUrl }
+            } }
+          }
+        } } }
         reviews(last: 100) { nodes { author { login } state submittedAt } }
         comments(last: 100) { totalCount nodes { author { login } createdAt } }
         # Everything anyone said, inline comments included; `comments` alone is
@@ -202,6 +215,39 @@ def set_task(number, index, done):
     finally:
         os.unlink(path)
     return {"number": number, "tasks": parse_tasks(updated)}
+
+
+# A CheckRun that ran and did not pass. NEUTRAL and SKIPPED did not fail, and
+# CANCELLED is usually a superseded run rather than something to go and read.
+FAILED_CONCLUSIONS = ("FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED")
+
+
+def check_url(pr):
+    """The run behind a red or spinning CI badge, if there is one to point at.
+
+    GitHub's checks tab is a list; what you want is the build that failed, which
+    for a status context is whatever service reported it.
+    """
+    commits = pr["commits"]["nodes"]
+    commit = commits[0]["commit"] if commits else {}
+    rollup = commit.get("statusCheckRollup") or {}
+    state = rollup.get("state")
+    if state not in ("FAILURE", "ERROR", "PENDING"):
+        return None
+    want_failed = state != "PENDING"
+
+    for context in (rollup.get("contexts") or {}).get("nodes") or []:
+        if context.get("__typename") == "CheckRun":
+            failed = context.get("conclusion") in FAILED_CONCLUSIONS
+            running = context.get("status") in ("QUEUED", "IN_PROGRESS", "WAITING", "PENDING")
+            url = context.get("detailsUrl")
+        else:
+            failed = context.get("state") in ("FAILURE", "ERROR")
+            running = context.get("state") == "PENDING"
+            url = context.get("targetUrl")
+        if url and (failed if want_failed else running):
+            return url
+    return None
 
 
 def merge_blockers(pr, decision, ci):
@@ -358,6 +404,114 @@ def classify(pr, me):
     return bucket, badges
 
 
+MERGE_STATE_QUERY = """
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+%s
+  }
+}
+"""
+
+# Mergeability is the most expensive thing GitHub will tell you about a PR:
+# asking for it across a board costs seconds, because it is computed per PR on
+# demand. It also barely changes, so remember it and only re-ask when the PR
+# has moved or the answer has gone stale.
+MERGE_STATE_MAX_AGE = 300
+_merge_state = {}
+
+
+MERGE_STATE_CHUNK = 8
+
+
+def merge_state_chunk(numbers):
+    """{number: (mergeable, mergeStateStatus)} for these PRs, in one round trip."""
+    if not numbers:
+        return {}
+    owner, _, name = REPO.partition("/")
+    fields = "\n".join(
+        f"    pr{number}: pullRequest(number: {number}) {{ mergeable mergeStateStatus }}"
+        for number in numbers
+    )
+    rc, out, err = sh(
+        [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={MERGE_STATE_QUERY % fields}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
+        ]
+    )
+    if rc != 0:
+        raise RuntimeError(err.strip() or out.strip())
+    repo = json.loads(out)["data"]["repository"]
+    return {
+        int(key[2:]): (value.get("mergeable"), value.get("mergeStateStatus"))
+        for key, value in repo.items()
+        if value
+    }
+
+
+def merge_state_for(numbers):
+    """As above, but a board's worth at once.
+
+    GitHub computes mergeability per PR, so asking about 26 of them in one query
+    is 26 sequential computations. Splitting the ask and running the parts at
+    the same time turns that into a handful of concurrent ones.
+    """
+    numbers = list(numbers)
+    chunks = [
+        numbers[at : at + MERGE_STATE_CHUNK] for at in range(0, len(numbers), MERGE_STATE_CHUNK)
+    ]
+    if len(chunks) <= 1:
+        return merge_state_chunk(numbers)
+    merged = {}
+    with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as pool:
+        for part in pool.map(merge_state_chunk, chunks):
+            merged.update(part)
+    return merged
+
+
+def apply_merge_state(nodes):
+    """Fill in mergeable and mergeStateStatus, reusing what has not changed.
+
+    Keyed on updatedAt as well as age: a PR that has not been touched almost
+    certainly has the same answer, and the age cap covers the case it does not
+    — the base branch moving leaves the PR itself untouched while making it
+    out of date.
+    """
+    now = time.monotonic()
+    ask = []
+    for pr in nodes:
+        known = _merge_state.get(pr["number"])
+        fresh = (
+            known
+            and known["updatedAt"] == pr["updatedAt"]
+            and now - known["at"] < MERGE_STATE_MAX_AGE
+            and known["mergeable"] != "UNKNOWN"
+        )
+        if not fresh:
+            ask.append(pr["number"])
+
+    fetched = merge_state_for(ask) if ask else {}
+    for number, (mergeable, state) in fetched.items():
+        _merge_state[number] = {
+            "updatedAt": next(pr["updatedAt"] for pr in nodes if pr["number"] == number),
+            "at": now,
+            "mergeable": mergeable,
+            "mergeStateStatus": state,
+        }
+
+    for pr in nodes:
+        known = _merge_state.get(pr["number"], {})
+        pr["mergeable"] = known.get("mergeable")
+        pr["mergeStateStatus"] = known.get("mergeStateStatus")
+    return nodes
+
+
 def run_search(search):
     rc, out, err = sh(["gh", "api", "graphql", "-f", f"query={GRAPHQL_QUERY}", "-f", f"q={search}"])
     if rc != 0:
@@ -381,37 +535,20 @@ def waiting_on_mergeability(data):
     )
 
 
-def split_queries(user_query):
-    """Split a query on `|` into the searches whose results get merged.
-
-    GitHub issue search has no OR, and the two things you want on a triage
-    board — what involves you and what is waiting on your review — are separate
-    qualifiers with no overlap. So run several searches and merge them.
-    """
-    return [part.strip() for part in user_query.split("|") if part.strip()] or [user_query]
-
-
-def search_prs(user_query):
-    """(viewer, nodes) for one or more searches, deduplicated by PR number."""
-    viewer, nodes, seen = None, [], set()
-    for part in split_queries(user_query):
-        search = f"repo:{REPO} is:pr {part}"
-        data = run_search(search)
-        if waiting_on_mergeability(data):
-            time.sleep(1.5)
-            data = run_search(search)
-        viewer = viewer or data["viewer"]
-        for pr in data["search"]["nodes"]:
-            if pr and pr["number"] not in seen:
-                seen.add(pr["number"])
-                nodes.append(pr)
-    return viewer, nodes
-
-
 def fetch_prs(user_query):
-    viewer, nodes = search_prs(user_query)
-    data = {"viewer": viewer, "search": {"issueCount": len(nodes), "nodes": nodes}}
-    me = viewer["login"]
+    search = f"repo:{REPO} is:pr {user_query}"
+    data = run_search(search)
+    me = data["viewer"]["login"]
+    nodes = [pr for pr in data["search"]["nodes"] if pr]
+    apply_merge_state(nodes)
+    if waiting_on_mergeability({"search": {"nodes": nodes}}):
+        # GitHub answers UNKNOWN first and computes in the background. Only the
+        # merge state has to be asked again — not the whole board.
+        time.sleep(1.5)
+        for pr in nodes:
+            _merge_state.pop(pr["number"], None)
+        apply_merge_state(nodes)
+    data["search"]["nodes"] = nodes
     # One listing for the whole page, so each row can say whether its worktree
     # is already there ("Open") or still has to be made ("Add").
     trees = list_worktrees()
@@ -453,6 +590,7 @@ def fetch_prs(user_query):
                 "canMerge": not blockers,
                 "mergeBlockers": blockers,
                 "mergeState": pr.get("mergeStateStatus"),
+                "ciUrl": check_url(pr),
                 "autoMerge": auto_merge(pr),
                 "tasksDone": done,
                 "tasksTotal": total,
