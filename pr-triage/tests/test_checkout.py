@@ -1,5 +1,7 @@
 """Tests for worktree-based checkout: reuse, creation, and cleanup on failure."""
 
+import json
+
 import pr_triage
 import pytest
 from pr_triage import do_checkout, parse_worktrees, worktree_dir
@@ -48,7 +50,7 @@ def repo(tmp_path, monkeypatch):
 def shell_for(monkeypatch, head_branch, worktrees, checkout=(0, "", "")):
     fake = FakeShell(
         {
-            ("gh", "pr", "view"): (0, head_branch + "\n", ""),
+            ("gh", "pr", "view"): (0, json.dumps({"headRefName": head_branch}), ""),
             ("git", "worktree", "list"): (0, worktrees, ""),
             ("git", "worktree", "add"): (0, "", ""),
             ("git", "worktree", "remove"): (0, "", ""),
@@ -230,3 +232,56 @@ class TestOpenPath:
         monkeypatch.setattr(pr_triage, "spawn", lambda argv: pytest.fail("spawned"))
         with pytest.raises(RuntimeError, match="No open command"):
             pr_triage.open_path(None, "/tmp/wt")
+
+
+class TestNamesPr:
+    """Worktrees get named by hand, so matching one exact directory is not enough."""
+
+    def test_matches_this_tool_s_own_name(self):
+        assert pr_triage.names_pr("pr-20701", 20701)
+
+    def test_matches_a_descriptive_suffix(self):
+        assert pr_triage.names_pr("pr-20701-cisco-meraki-tcp-ssl", 20701)
+        assert pr_triage.names_pr("pr_18927", 18927)
+        assert pr_triage.names_pr("PR-123-fix", 123)
+
+    def test_matches_inside_a_longer_name(self):
+        assert pr_triage.names_pr("review/pr-123-thing", 123)
+
+    def test_does_not_match_a_different_number(self):
+        assert not pr_triage.names_pr("pr-207011", 20701)
+        assert not pr_triage.names_pr("pr-2070", 20701)
+
+    def test_needs_the_pr_prefix(self):
+        # Branch names are full of issue numbers and dates.
+        assert not pr_triage.names_pr("7471-cisco-meraki-ssl", 7471)
+        assert not pr_triage.names_pr("fix-20701", 20701)
+
+    def test_copes_with_no_name(self):
+        assert not pr_triage.names_pr(None, 1)
+        assert not pr_triage.names_pr("", 1)
+
+
+class TestFindWorktreeMatching:
+    def trees(self):
+        return [
+            ("/repo", "main"),
+            ("/repo/.claude/worktrees/pr-20701-cisco-meraki-tcp-ssl", "pr-20701-cisco-meraki"),
+            ("/repo/.claude/worktrees/fortigate", "investigate/fortigate"),
+        ]
+
+    def test_finds_a_hand_named_worktree(self, repo, monkeypatch):
+        found = pr_triage.find_worktree(self.trees(), 20701, "7471-cisco-meraki-ssl", True)
+        assert found[0] == "/repo/.claude/worktrees/pr-20701-cisco-meraki-tcp-ssl"
+
+    def test_a_forks_branch_name_is_not_ours(self, repo, monkeypatch):
+        # A fork whose head branch is called "main" must not match the main
+        # checkout — the button would open the wrong tree entirely.
+        assert pr_triage.find_worktree(self.trees(), 18946, "main", True) is None
+
+    def test_same_repo_branches_still_match(self, repo, monkeypatch):
+        found = pr_triage.find_worktree(self.trees(), 999, "investigate/fortigate", False)
+        assert found[0] == "/repo/.claude/worktrees/fortigate"
+
+    def test_nothing_matches_an_unknown_pr(self, repo, monkeypatch):
+        assert pr_triage.find_worktree(self.trees(), 4242, "some/branch", False) is None

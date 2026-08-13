@@ -69,7 +69,7 @@ query($q: String!) {
     nodes {
       ... on PullRequest {
         number title url body isDraft reviewDecision createdAt updatedAt
-        headRefName additions deletions
+        headRefName additions deletions isCrossRepository
         autoMergeRequest { enabledAt mergeMethod enabledBy { login } }
         author { login avatarUrl }
         labels(first: 20) { nodes { name color } }
@@ -559,7 +559,9 @@ def fetch_prs(user_query):
             continue
         bucket, badges = classify(pr, me)
         done, total = count_tasks(pr.get("body"))
-        found = find_worktree(trees, pr["number"], pr["headRefName"])
+        found = find_worktree(
+            trees, pr["number"], pr["headRefName"], pr.get("isCrossRepository", False)
+        )
         commit = (pr["commits"]["nodes"] or [{}])[0].get("commit", {})
         blockers = merge_blockers(
             pr,
@@ -633,7 +635,8 @@ def worktree_dir(number):
     return root / f"pr-{number}"
 
 
-def pr_head_branch(number):
+def pr_head(number):
+    """(branch, is_cross_repository) for a PR."""
     rc, out, err = sh(
         [
             "gh",
@@ -643,14 +646,13 @@ def pr_head_branch(number):
             "--repo",
             REPO,
             "--json",
-            "headRefName",
-            "--jq",
-            ".headRefName",
+            "headRefName,isCrossRepository",
         ]
     )
     if rc != 0:
         raise RuntimeError(err.strip() or out.strip())
-    return out.strip()
+    head = json.loads(out)
+    return head["headRefName"], head.get("isCrossRepository", False)
 
 
 def list_worktrees():
@@ -662,17 +664,38 @@ def list_worktrees():
     return parse_worktrees(out)
 
 
-def find_worktree(trees, number, branch):
+def names_pr(name, number):
+    """True if this directory or branch name is about PR `number`.
+
+    Worktrees get named by hand and by other tools — `pr-20701-cisco-meraki`,
+    `pr_18927`, `PR-123-fix` — so matching only the exact directory this tool
+    would create misses most of them. The `pr` prefix is required: a bare
+    number appears in branch names for issue numbers and dates.
+    """
+    return re.search(rf"(?:^|[^a-z0-9])pr[-_]?{number}(?![0-9])", name or "", re.I) is not None
+
+
+def find_worktree(trees, number, branch, cross_repo=False):
     """The worktree already holding this PR, as (path, branch), or None.
 
-    Either signal counts: the PR's branch is checked out somewhere, or the
-    directory this tool would create is already a worktree (it may hold the
-    PR under a different branch name, e.g. one made by `gh pr checkout -b`).
+    Several signals, strongest first: the directory or branch names the PR, the
+    directory is the one this tool would create, or the PR's branch is checked
+    out somewhere.
+
+    That last one only holds for a PR from this repo. A fork's branch name is
+    not ours — plenty of forks call theirs `main` — so matching it would point
+    at whatever unrelated local branch happens to share the name, including the
+    main checkout.
     """
     target = worktree_dir(number) if MAIN_CHECKOUT else None
     for path, existing_branch in trees:
-        if (branch and existing_branch == branch) or (target and Path(path) == target):
+        named = names_pr(Path(path).name, number) or names_pr(existing_branch, number)
+        if named or (target and Path(path) == target):
             return path, existing_branch or branch
+    if not cross_repo and branch:
+        for path, existing_branch in trees:
+            if existing_branch == branch:
+                return path, existing_branch
     return None
 
 
@@ -700,8 +723,8 @@ def do_checkout(number, open_command=None):
         raise RuntimeError(
             "No checkout configured — start from inside a repo or set PR_TRIAGE_CHECKOUT"
         )
-    branch = pr_head_branch(number)
-    existing = find_worktree(list_worktrees(), number, branch)
+    branch, cross_repo = pr_head(number)
+    existing = find_worktree(list_worktrees(), number, branch, cross_repo)
     if existing:
         path, existing_branch = existing
         result = {"path": path, "branch": existing_branch, "created": False}
