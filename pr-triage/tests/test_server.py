@@ -58,6 +58,18 @@ def test_serves_the_paths_module(base_url):
     assert "export function shortPath" in body
 
 
+def test_serves_the_ref_module(base_url):
+    status, body = req(base_url + "/ref.mjs")
+    assert status == 200
+    assert "export function parseRef" in body
+
+
+def test_interdiff_route(base_url, monkeypatch):
+    monkeypatch.setattr(pr_triage, "fetch_interdiff", lambda n: {"number": n, "files": []})
+    status, body = req(base_url + "/api/interdiff?number=12")
+    assert (status, body) == (200, {"number": 12, "files": []})
+
+
 def test_static_map_does_not_serve_arbitrary_files(base_url):
     for path in ("/pr_triage.py", "/../pyproject.toml", "/tests/test_server.py"):
         assert req(base_url + path)[0] == 404

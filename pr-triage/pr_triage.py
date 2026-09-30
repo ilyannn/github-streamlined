@@ -21,6 +21,8 @@ the current working directory; override with env vars to run from anywhere:
     PR_TRIAGE_QUERY     default search query
 """
 
+import difflib
+import fnmatch
 import hashlib
 import json
 import os
@@ -52,6 +54,7 @@ STATIC = {
     "/query.mjs": ("query.mjs", "text/javascript; charset=utf-8"),
     "/paths.mjs": ("paths.mjs", "text/javascript; charset=utf-8"),
     "/markdown.mjs": ("markdown.mjs", "text/javascript; charset=utf-8"),
+    "/ref.mjs": ("ref.mjs", "text/javascript; charset=utf-8"),
 }
 
 ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
@@ -94,8 +97,12 @@ query($q: String!) {
             } }
           }
         } } }
-        reviews(last: 100) { nodes { author { login } state submittedAt } }
-        comments(last: 100) { totalCount nodes { author { login } createdAt } }
+        # __typename tells a bot account from a person; bodyText lets a CI
+        # command like `/test` be told from something someone said.
+        reviews(last: 100) { nodes { author { login __typename } state submittedAt } }
+        comments(last: 100) {
+          totalCount nodes { author { login __typename } createdAt bodyText }
+        }
         # Everything anyone said, inline comments included; `comments` alone is
         # just the conversation tab and badly understates a reviewed PR.
         totalCommentsCount
@@ -300,6 +307,40 @@ def auto_merge(pr):
     }
 
 
+# Who and what does not count as someone saying something. Both lists are
+# adapted from BetterGithub's defaults (see THIRD_PARTY_LICENSES.md). Accounts
+# GitHub marks as bots are always ignored; these globs catch the ones that are
+# ordinary user accounts, and the patterns catch CI commands typed by people.
+IGNORED_AUTHORS = [
+    glob.strip()
+    for glob in os.getenv(
+        "PR_TRIAGE_IGNORE_AUTHORS", "codecov*,sonar*,mergify*,copilot*,coderabbit*"
+    ).split(",")
+    if glob.strip()
+]
+COMMAND_RE = re.compile(
+    os.getenv(
+        "PR_TRIAGE_IGNORE_COMMENTS",
+        r"/\w+\s*$|/(ci|test|backport|run)\b|@?(copilot|coderabbitai) review\b",
+    ),
+    re.IGNORECASE,
+)
+
+
+def is_bot(author):
+    login = (author or {}).get("login") or ""
+    return (author or {}).get("__typename") == "Bot" or any(
+        fnmatch.fnmatch(login.lower(), glob.lower()) for glob in IGNORED_AUTHORS
+    )
+
+
+def is_noise(entry):
+    """A bot's comment or review, or a comment that only pokes CI."""
+    return is_bot(entry.get("author")) or bool(
+        COMMAND_RE.match((entry.get("bodyText") or "").strip())
+    )
+
+
 def classify(pr, me):
     """Return (bucket, badges) for a PR from the viewer's perspective."""
     badges = []
@@ -324,13 +365,23 @@ def classify(pr, me):
     my_review_times = [ts(r["submittedAt"]) for r in reviews if r["author"]["login"] == me]
     my_last_review = max(my_review_times) if my_review_times else None
 
+    # Bots and `/test` do not count as news: otherwise every CI report would
+    # put a PR back in front of you. Your own commands still count as you
+    # having looked.
     others_new = 0
     if my_last:
         others_new = sum(
-            1 for c in comments if c["author"]["login"] != me and ts(c["createdAt"]) > my_last
+            1
+            for c in comments
+            if c["author"]["login"] != me and not is_noise(c) and ts(c["createdAt"]) > my_last
         )
         others_new += sum(
-            1 for r in reviews if r["author"]["login"] != me and ts(r["submittedAt"]) > my_last
+            1
+            for r in reviews
+            if r["author"]["login"] != me
+            and not is_noise(r)
+            and r.get("submittedAt")
+            and ts(r["submittedAt"]) > my_last
         )
 
     requested_of_me = any(
@@ -404,7 +455,8 @@ def classify(pr, me):
     return bucket, badges
 
 
-MERGE_STATE_QUERY = """
+# Any number of aliased fields on the repository, asked in one round trip.
+REPOSITORY_QUERY = """
 query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
 %s
@@ -438,7 +490,7 @@ def merge_state_chunk(numbers):
             "api",
             "graphql",
             "-f",
-            f"query={MERGE_STATE_QUERY % fields}",
+            f"query={REPOSITORY_QUERY % fields}",
             "-f",
             f"owner={owner}",
             "-f",
@@ -462,15 +514,18 @@ def merge_state_for(numbers):
     is 26 sequential computations. Splitting the ask and running the parts at
     the same time turns that into a handful of concurrent ones.
     """
+    return in_chunks(merge_state_chunk, numbers, MERGE_STATE_CHUNK)
+
+
+def in_chunks(fetch, numbers, size):
+    """fetch() over `numbers` in parts of `size`, a few at a time, merged."""
     numbers = list(numbers)
-    chunks = [
-        numbers[at : at + MERGE_STATE_CHUNK] for at in range(0, len(numbers), MERGE_STATE_CHUNK)
-    ]
+    chunks = [numbers[at : at + size] for at in range(0, len(numbers), size)]
     if len(chunks) <= 1:
-        return merge_state_chunk(numbers)
+        return fetch(numbers)
     merged = {}
     with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as pool:
-        for part in pool.map(merge_state_chunk, chunks):
+        for part in pool.map(fetch, chunks):
             merged.update(part)
     return merged
 
@@ -535,11 +590,95 @@ def waiting_on_mergeability(data):
     )
 
 
+# A token of a search query: a run of non-space characters, where a quoted
+# section may contain spaces. The same rule as TOKEN_RE in query.mjs.
+QUERY_TOKEN_RE = re.compile(r'(?:[^\s"]+|"[^"]*")+')
+PATH_TERM_RE = re.compile(r"^(-?)path:(.+)$", re.IGNORECASE)
+
+
+def split_path_terms(query):
+    """(query without path: terms, [included globs], [excluded globs]).
+
+    GitHub search has no qualifier for the files a PR changes, so `path:` and
+    `-path:` are taken out before the query goes to GitHub and applied here.
+    """
+    kept, include, exclude = [], [], []
+    for token in QUERY_TOKEN_RE.findall(query):
+        found = PATH_TERM_RE.match(token)
+        if not found:
+            kept.append(token)
+            continue
+        glob = found.group(2).replace('"', "")
+        if glob:
+            (exclude if found.group(1) else include).append(glob)
+    if not (include or exclude):
+        return query, [], []  # untouched, spacing and all
+    return " ".join(kept), include, exclude
+
+
+def path_matches(path, glob):
+    """fnmatch, where `*` crosses directories; a plain path also covers what is under it."""
+    if any(ch in glob for ch in "*?["):
+        return fnmatch.fnmatchcase(path, glob)
+    folder = glob.rstrip("/")
+    return path == folder or path.startswith(folder + "/")
+
+
+# The files a PR changes, asked apart from the search: in it, they made GitHub
+# time out on a board's worth of PRs. Keyed on updatedAt, like mergeability,
+# since a push moves it.
+FILES_CHUNK = 10
+_files = {}
+
+
+def files_chunk(numbers):
+    """{number: [paths]} for these PRs — their first 100 files — in one round trip."""
+    if not numbers:
+        return {}
+    owner, _, name = REPO.partition("/")
+    fields = "\n".join(
+        f"    pr{number}: pullRequest(number: {number}) {{ files(first: 100) {{ nodes {{ path }} }} }}"
+        for number in numbers
+    )
+    repo = gh_graphql(REPOSITORY_QUERY % fields, owner=owner, name=name)["repository"]
+    return {
+        int(key[2:]): [node["path"] for node in (value.get("files") or {}).get("nodes") or []]
+        for key, value in repo.items()
+        if value
+    }
+
+
+def apply_files(nodes):
+    """Give each PR its changed paths, asking only about PRs that moved."""
+    ask = [
+        pr["number"]
+        for pr in nodes
+        if (_files.get(pr["number"]) or {}).get("updatedAt") != pr["updatedAt"]
+    ]
+    fetched = in_chunks(files_chunk, ask, FILES_CHUNK) if ask else {}
+    for pr in nodes:
+        if pr["number"] in fetched:
+            _files[pr["number"]] = {"updatedAt": pr["updatedAt"], "paths": fetched[pr["number"]]}
+        pr["files"] = (_files.get(pr["number"]) or {}).get("paths", [])
+    return nodes
+
+
+def touches_paths(pr, include, exclude):
+    """True if the PR changes a file matching any include glob, and none matching an exclude."""
+    paths = pr.get("files") or []
+    if include and not any(path_matches(p, g) for p in paths for g in include):
+        return False
+    return not any(path_matches(p, g) for p in paths for g in exclude)
+
+
 def fetch_prs(user_query):
-    search = f"repo:{REPO} is:pr {user_query}"
+    github_query, include, exclude = split_path_terms(user_query)
+    search = f"repo:{REPO} is:pr {github_query}".rstrip()
     data = run_search(search)
     me = data["viewer"]["login"]
     nodes = [pr for pr in data["search"]["nodes"] if pr]
+    if include or exclude:
+        nodes = [pr for pr in apply_files(nodes) if touches_paths(pr, include, exclude)]
     apply_merge_state(nodes)
     if waiting_on_mergeability({"search": {"nodes": nodes}}):
         # GitHub answers UNKNOWN first and computes in the background. Only the
@@ -1042,6 +1181,178 @@ def fetch_comments(number):
     }
 
 
+# ------------------------------ since your review ---------------------------
+#
+# What changed between the commit you last reviewed and the head, file by file.
+# Adapted from BetterGithub's "since last review" view (bgh/app.py
+# interdiff_files, bgh/sync.py fetch_blobs, bgh/diff.py make_patch), MIT
+# licensed; see THIRD_PARTY_LICENSES.md.
+#
+# Both sides are fetched as blobs and diffed here, rather than asking git or
+# GitHub for base..head: after a force-push the reviewed commit is no longer on
+# any branch, so there is no range to ask for — but GitHub still has the
+# objects.
+
+REVIEWED_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  viewer { login }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      title url headRefOid
+      reviews(last: 100) { nodes { author { login } submittedAt commit { oid } } }
+    }
+  }
+}
+"""
+
+BLOB_CHUNK = 40
+# (sha, path) -> {"text": str | None, "binary": bool}, or None where the file
+# does not exist at that commit. A commit's files never change, so this never
+# goes stale; it is only capped.
+_blobs = {}
+BLOB_CACHE_MAX = 2000
+
+
+def gh_graphql(query, **variables):
+    args = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for key, value in variables.items():
+        args += ["-F" if isinstance(value, int) else "-f", f"{key}={value}"]
+    rc, out, err = sh(args)
+    if rc != 0:
+        raise RuntimeError(err.strip() or out.strip())
+    return json.loads(out)["data"]
+
+
+def last_reviewed_commit(reviews, me):
+    """(oid, submittedAt) of the commit your latest submitted review was on, or None."""
+    mine = [
+        r
+        for r in reviews
+        if (r.get("author") or {}).get("login") == me and r.get("submittedAt") and r.get("commit")
+    ]
+    if not mine:
+        return None
+    latest = max(mine, key=lambda r: ts(r["submittedAt"]))
+    return latest["commit"]["oid"], latest["submittedAt"]
+
+
+def fetch_blobs(pairs):
+    """{(sha, path): blob} for each pair, a few dozen per round trip."""
+    missing = [pair for pair in dict.fromkeys(pairs) if pair not in _blobs]
+    owner, _, name = REPO.partition("/")
+    for at in range(0, len(missing), BLOB_CHUNK):
+        chunk = missing[at : at + BLOB_CHUNK]
+        fields = "\n".join(
+            f"    b{i}: object(expression: {json.dumps(f'{sha}:{path}')})"
+            " { ... on Blob { text isBinary } }"
+            for i, (sha, path) in enumerate(chunk)
+        )
+        repo = gh_graphql(REPOSITORY_QUERY % fields, owner=owner, name=name)["repository"]
+        if len(_blobs) > BLOB_CACHE_MAX:
+            _blobs.clear()
+        for i, key in enumerate(chunk):
+            blob = repo.get(f"b{i}")
+            _blobs[key] = blob and {"text": blob.get("text"), "binary": bool(blob.get("isBinary"))}
+    return {pair: _blobs.get(pair) for pair in pairs}
+
+
+def make_patch(old_text, new_text, context=3):
+    """Unified diff hunks between two texts, without the ---/+++ header."""
+    lines = list(
+        difflib.unified_diff(
+            (old_text or "").splitlines(), (new_text or "").splitlines(), lineterm="", n=context
+        )
+    )
+    # By position, not prefix: a removed line reading "-- note" is "--- note".
+    return "\n".join(lines[2:])
+
+
+def diff_file(filename, previous, old, new):
+    """One file's change between two blobs (either may be None: not there)."""
+    entry = {"path": filename, "previous": previous, "patch": "", "additions": 0, "deletions": 0}
+    if (old or {}).get("binary") or (new or {}).get("binary"):
+        entry["status"] = "unchanged" if old == new else "binary"
+        return entry
+    old_text = old["text"] if old else None
+    new_text = new["text"] if new else None
+    if old_text == new_text:
+        entry["status"] = "unchanged"
+        return entry
+    entry["status"] = "added" if old is None else "removed" if new is None else "modified"
+    entry["patch"] = make_patch(old_text, new_text)
+    for line in entry["patch"].splitlines():
+        if line.startswith("+"):
+            entry["additions"] += 1
+        elif line.startswith("-"):
+            entry["deletions"] += 1
+    return entry
+
+
+def pr_files(number):
+    """[(filename, previous filename or None)] the PR changes at its head."""
+    rc, out, err = sh(
+        [
+            "gh",
+            "api",
+            "--paginate",
+            f"repos/{REPO}/pulls/{number}/files",
+            "--jq",
+            ".[] | [.filename, .previous_filename]",
+        ]
+    )
+    if rc != 0:
+        raise RuntimeError(err.strip() or out.strip())
+    return [tuple(json.loads(line)) for line in out.splitlines() if line.strip()]
+
+
+def fetch_interdiff(number):
+    """The PR's files as they changed since the commit you last reviewed.
+
+    Only files the PR touches are compared, so a rebase shows up as the
+    upstream edits to those files and not as the whole of upstream.
+    """
+    owner, _, name = REPO.partition("/")
+    data = gh_graphql(REVIEWED_QUERY, owner=owner, name=name, number=int(number))
+    pr = data["repository"]["pullRequest"]
+    if not pr:
+        raise RuntimeError(f"No such pull request: #{number}")
+    reviewed = last_reviewed_commit(pr["reviews"]["nodes"], data["viewer"]["login"])
+    if not reviewed:
+        raise RuntimeError(f"You have not reviewed #{number} yet")
+    base, reviewed_at = reviewed
+    head = pr["headRefOid"]
+    result = {
+        "number": number,
+        "title": pr["title"],
+        "url": pr["url"],
+        "base": base,
+        "head": head,
+        "reviewedAt": reviewed_at,
+        # GitHub's own view of the same range, where it can still draw one.
+        "githubUrl": f"{pr['url']}/files/{base}..{head}",
+        "files": [],
+    }
+    if base == head:
+        return result
+
+    files = pr_files(number)
+    pairs = []
+    for filename, previous in files:
+        pairs += [(base, filename), (head, filename)]
+        if previous:
+            pairs.append((base, previous))
+    blobs = fetch_blobs(pairs)
+    for filename, previous in files:
+        # A file renamed after your review was, at your review, its old name.
+        old = blobs.get((base, filename))
+        if old is None and previous:
+            old = blobs.get((base, previous))
+        result["files"].append(diff_file(filename, previous, old, blobs.get((head, filename))))
+    # What changed first; files the PR touches but that did not move since, last.
+    result["files"].sort(key=lambda f: f["status"] == "unchanged")
+    return result
+
+
 PR_DIR_RE = re.compile(r"/pr-(\d+)/?$")
 GONE = ("CLOSED", "MERGED")
 
@@ -1245,6 +1556,10 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/comments":
                 self.send_json(
                     200, fetch_comments(int(parse_qs(url.query).get("number", ["0"])[0]))
+                )
+            elif url.path == "/api/interdiff":
+                self.send_json(
+                    200, fetch_interdiff(int(parse_qs(url.query).get("number", ["0"])[0]))
                 )
             elif url.path == "/api/tasks":
                 self.send_json(200, fetch_tasks(int(parse_qs(url.query).get("number", ["0"])[0])))
