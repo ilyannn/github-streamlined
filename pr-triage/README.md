@@ -8,7 +8,7 @@ Open PRs are grouped into action buckets:
 
 | Bucket | Meaning |
 | --- | --- |
-| 🎯 Review now | Others' PRs where your review is requested, you've never looked, code was pushed since your review, or new comments arrived since your last activity |
+| 🎯 Review now | Others' PRs where your review is requested, you've never looked, code was pushed since your review, or new comments arrived since your last activity (bots and CI commands don't count) |
 | 🛠️ Your PRs — act | Anything of yours where the next move is yours: a review verdict to answer, failing CI, conflicts, new comments — or nothing left but the merge |
 | 📝 Your drafts | Yours, not open for review yet — each with a **Ready for review** button |
 | 🚀 Merge-ready | Other people's PRs you could land: approved, green CI, no conflicts |
@@ -36,6 +36,33 @@ that PR's card as you move through the list. A worktree whose PR is outside
 the current query still shows its number, read from the directory name. The
 open command lives at the top of that panel, so it is editable wherever you
 are.
+
+## What changed since your review
+
+A PR you reviewed and that has been pushed to since carries a **Δ pushed since
+your review** badge. Click it (or select the card and press <kbd>i</kbd>) for
+the change between the commit you reviewed and the head, file by file. Both
+sides are fetched as blobs and diffed locally, so it still works after a
+force-push has taken the reviewed commit off every branch. Only the files the
+PR changes are compared, so if the branch was rebased, upstream edits to those
+files show up as well.
+
+## New comments, not noise
+
+"New comments since your last activity" leaves out accounts GitHub marks as
+bots, accounts matching `PR_TRIAGE_IGNORE_AUTHORS` (bot-like users such as
+`codecov*`), and comments that only poke CI, like `/test` or `@copilot review`
+(`PR_TRIAGE_IGNORE_COMMENTS`). Otherwise every CI report would put a PR back
+in front of you. The 💬 conversation still shows everything.
+
+## Filtering by path
+
+GitHub search cannot filter on the files a PR changes, so the search box adds
+`path:` and `-path:`. They are taken out of the query before it goes to GitHub
+and applied here, on each PR's first 100 changed files. A glob's `*` crosses
+directories (`path:*.tf`, `path:src/linux/*`). A plain path also covers
+everything under it (`path:docs`). Several `path:` terms match any of them,
+and `-path:` excludes.
 
 ## Filtering by clicking
 
@@ -101,7 +128,13 @@ query.
 | --- | --- |
 | <kbd>/</kbd> | Focus the search box |
 | <kbd>r</kbd> | Refresh now |
-| <kbd>Enter</kbd> | Apply the query (it persists across reloads) |
+| <kbd>Enter</kbd> | Apply the query (it persists across reloads), or open the selected PR |
+| <kbd>j</kbd> / <kbd>k</kbd> | Select the next / previous card (clicking a card selects it too) |
+| <kbd>o</kbd> | Open the selected PR on GitHub |
+| <kbd>c</kbd> | Show the selected PR's conversation |
+| <kbd>i</kbd> | Show what changed on the selected PR since your review (or why there is nothing to show) |
+| <kbd>:</kbd> | Jump to `123`, `#123`, `owner/repo#123` or a github.com URL: selects it if it's on the board, opens it on GitHub if not |
+| <kbd>w</kbd> | Open the worktree panel |
 | <kbd>Esc</kbd> | Close a popover, or leave the search box |
 
 ## Requirements
@@ -160,6 +193,8 @@ matters if someone else is editing while you have it open.
 | `PR_TRIAGE_WORKTREES` | `<checkout>/.worktrees` | Where new worktrees are created |
 | `PR_TRIAGE_QUERY` | `is:open involves:@me \| is:open review-requested:@me` | Default search query; `\|` merges several searches |
 | `PR_TRIAGE_RELOAD` | `1` | Restart when the source changes; `0` to disable |
+| `PR_TRIAGE_IGNORE_AUTHORS` | `codecov*,sonar*,mergify*,copilot*,coderabbit*` | Comma-separated login globs whose comments are not news (GitHub bot accounts always are ignored) |
+| `PR_TRIAGE_IGNORE_COMMENTS` | `/\w+\s*$\|/(ci\|test\|backport\|run)\b\|@?(copilot\|coderabbitai) review\b` | Regex, matched at the start of a comment, for CI commands that are not news |
 
 ## Security model
 
@@ -187,4 +222,13 @@ just tests
 ```
 
 `just test-py` covers the server and the triage logic; `just test-js` covers
-[`query.mjs`](query.mjs), the query-string helpers behind the filter buttons.
+[`query.mjs`](query.mjs), the query-string helpers behind the filter buttons, and the
+other browser-side modules.
+
+## Credits
+
+The since-your-review diff, the bot and CI-command defaults, the `:` jump box,
+`j`/`k` navigation and path filtering are borrowed from
+[BetterGithub](https://github.com/stanek-michal/BetterGithub) by Michal Stanek,
+a fast read-only PR viewer that is well worth running alongside this. Its MIT
+license is reproduced in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
