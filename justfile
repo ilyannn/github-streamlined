@@ -61,6 +61,7 @@ prerequisites:
 
 # Lint Python and TOML sources
 lint:
+    just --fmt --check --unstable
     ruff check .
     ruff format --check .
     taplo lint
@@ -68,6 +69,7 @@ lint:
 
 # Rewrite sources into formatted form
 fmt:
+    just --fmt --unstable
     ruff check --fix .
     ruff format .
     taplo fmt
